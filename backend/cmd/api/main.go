@@ -13,11 +13,17 @@ import (
 	"time"
 
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/config"
+	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/dashboard"
+	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/health"
+	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/meter"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/platform/database"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/platform/logger"
 )
 
-const shutdownTimeout = 10 * time.Second
+const (
+	shutdownTimeout = 10 * time.Second
+	healthTimeout   = 2 * time.Second
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -46,8 +52,12 @@ func run() error {
 	defer pool.Close()
 
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           newRouter(log, cfg.CORSAllowedOrigins, pool),
+		Addr: fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler: newRouter(log, cfg.CORSAllowedOrigins,
+			health.NewHandler(pool, healthTimeout),
+			meter.NewHandler(meter.NewService(meter.NewRepository(pool))),
+			dashboard.NewHandler(dashboard.NewService(dashboard.NewRepository(pool))),
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,

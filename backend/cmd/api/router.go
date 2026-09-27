@@ -3,20 +3,22 @@ package main
 import (
 	"log/slog"
 	"net/http"
-	"time"
 
-	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/health"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/platform/httpx"
 )
 
-const healthTimeout = 2 * time.Second
+// registrar is anything that mounts its routes on a mux (every domain Handler).
+type registrar interface {
+	Register(mux *http.ServeMux)
+}
 
 // newRouter mounts every domain's routes and wraps them with the middleware chain.
-// New domains register here: <domain>.NewHandler(...).Register(mux).
-func newRouter(log *slog.Logger, allowedOrigins []string, db health.Pinger) http.Handler {
+// Domain handlers are built in main.go and passed in, so tests can use fakes.
+func newRouter(log *slog.Logger, allowedOrigins []string, handlers ...registrar) http.Handler {
 	mux := http.NewServeMux()
-
-	health.NewHandler(db, healthTimeout).Register(mux)
+	for _, h := range handlers {
+		h.Register(mux)
+	}
 
 	return httpx.Chain(httpx.Routes(mux),
 		httpx.RequestID,

@@ -1,4 +1,4 @@
-.PHONY: run test lint build
+.PHONY: run test test-integration lint build
 
 ENV_FILE ?= ../.env
 
@@ -9,6 +9,12 @@ run:
 
 test:
 	go test ./...
+
+# Runs integration tests against the dockerized DB (docker compose up -d db).
+test-integration:
+	@set -a; . $(ENV_FILE); set +a; \
+	TEST_DATABASE_URL="postgres://$${DB_USER}:$${DB_PASSWORD}@localhost:$${DB_HOST_PORT:-5432}/$${DB_NAME}?sslmode=disable" \
+	go test ./... -run Integration -count=1 -p 1
 
 lint:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
