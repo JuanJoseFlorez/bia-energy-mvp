@@ -80,17 +80,64 @@ Created and seeded by `db-init/init.sql` on first Postgres start.
    | `LLM_API_KEY`    | LLM API key (empty = template explanations)        |
    | `VITE_API_URL`   | Backend URL used by the frontend (build time)      |
 
-2. Start the database (only service available for now):
+2. Start the database and the backend API:
 
    ```bash
-   docker compose up db
+   docker compose up --build db backend
+   ```
+
+   Then check the API is up:
+
+   ```bash
+   curl localhost:8080/health
    ```
 
 > `init.sql` runs only on an empty volume. To recreate the database after a schema change: `docker compose down -v && docker compose up db` (wipes the volume; data reloads from the CSVs).
 
+## Backend (Go)
+
+REST API in `backend/`, organized by domain:
+
+```
+backend/
+├── cmd/api/                 # entrypoint: wiring, router, graceful shutdown
+└── internal/
+    ├── config/              # env loading + validation
+    ├── platform/            # cross-cutting: apperr, database, httpx, logger
+    └── health/              # GET /health (template for new domains)
+```
+
+Each business domain is one package with `model.go`, `repository.go`, `service.go` and `handler.go` as needed. Services wrap `apperr` errors; handlers respond through `httpx`, which maps them to HTTP status codes with a single error format:
+
+```json
+{ "error": { "code": "not_found", "message": "..." }, "request_id": "..." }
+```
+
+Local development (DB in Docker, API on the host):
+
+```bash
+docker compose up -d db
+cd backend
+make run     # loads ../.env, connects to localhost:$DB_HOST_PORT
+make test    # unit tests, no Docker needed
+make lint    # gofmt + go vet
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HTTP_PORT` | `8080` | API port |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+
+Endpoints:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | `200` if the database responds, `503` otherwise |
+
 ## Roadmap
 
-1. ✅ **Base**: docker-compose, PostgreSQL, schema and CSV load.
+1. ✅ **Base**: docker-compose, PostgreSQL, schema, CSV load and backend skeleton (`/health`).
 2. **Backend**: meters and readings endpoints.
 3. **engine-ai**: baseline, detection and classification.
 4. **AI**: LLM explanation and recommendation; analysis endpoints.
