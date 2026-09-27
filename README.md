@@ -2,7 +2,7 @@
 
 MVP to manage electric meters and use AI to **detect, explain, prioritize and recommend actions** on consumption anomalies.
 
-> Status: **work in progress**. Database and orchestration ready; services pending.
+> Status: **work in progress**. Database and orchestration, and the backend read API are ready; engine-ai and frontend pending.
 
 ## Stack
 
@@ -29,7 +29,7 @@ Frontend (React/TS) ──HTTP──▶ Backend (Go, REST API) ──HTTP──�
 
 ```
 .
-├── backend/            # Go REST API (pending)
+├── backend/            # Go REST API
 ├── frontend/           # React + TypeScript app (pending)
 ├── engine-ai/          # Python analysis engine (pending)
 ├── db-init/
@@ -131,14 +131,87 @@ make lint    # gofmt + go vet
 
 Endpoints:
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | `200` if the database responds, `503` otherwise |
+| Method | Path | Query params | Description |
+|---|---|---|---|
+| `GET` | `/health` | — | `200` if the database responds, `503` otherwise |
+| `GET` | `/meters` | `status` (`all`\|`ok`\|`alert`\|`critical`), `q`, `sort` (`meter_id`\|`consumption`\|`variation`\|`severity`), `order` (`asc`\|`desc`), `limit` (1–200, default 50), `offset` | Meters with period consumption, daily metrics, health and top anomaly |
+| `GET` | `/meters/{meterId}` | — | Meter detail with full anomaly and events |
+| `GET` | `/meters/{meterId}/readings` | `from`, `to` (RFC3339 or `YYYY-MM-DD`, inclusive) | Hourly readings, ascending |
+| `GET` | `/dashboard/summary` | — | Platform KPIs |
+
+`health`, `metrics` and `anomaly` are `null` until an analysis run has completed. Timestamps are RFC3339 UTC.
+
+- `order` defaults to `asc` for `sort=meter_id` and `desc` for every other sort key; `sort` and `order` are case-insensitive.
+- `q` matches a substring of `meter_id` only (case-insensitive; `%`, `_`, `\` are literal).
+- `status=ok|alert|critical` filters on `health`, so before the first completed analysis only `status=all` returns meters.
+
+Values in `metrics` and `anomaly` below illustrate output once an analysis has run; before that they are `null`.
+
+Example — `GET /meters?sort=variation`:
+
+```json
+{
+  "items": [{
+    "id": 9, "meter_id": "M-109", "name": "Meter 109", "location": "Planta C",
+    "status": "ACTIVE", "created_at": "2026-09-26T22:00:00Z",
+    "period_consumption_kwh": 17526.04,
+    "health": "CRITICAL",
+    "metrics": { "current_kwh": 2207.60, "baseline_kwh": 1048.79, "variation_pct": 110.5, "change_start": "2026-09-12T14:00:00Z" },
+    "anomaly": { "id": 3, "meter_id": "M-109", "type": "REAL_ANOMALY", "severity": "HIGH", "confidence": 0.96, "priority": 1 }
+  }],
+  "total": 12
+}
+```
+
+Example — `GET /dashboard/summary`:
+
+```json
+{
+  "meters_count": 12,
+  "period": { "from": "2026-09-01T00:00:00Z", "to": "2026-09-14T23:00:00Z" },
+  "total_consumption_kwh": 155250.85,
+  "last_analysis": null,
+  "anomalies": null
+}
+```
+
+Example — `GET /meters/M-109`:
+
+```json
+{
+  "id": 9, "meter_id": "M-109", "name": "Meter 109", "location": "Planta C",
+  "status": "ACTIVE", "created_at": "2026-09-26T22:00:00Z",
+  "period_consumption_kwh": 17526.04,
+  "health": "CRITICAL",
+  "metrics": { "current_kwh": 2207.60, "baseline_kwh": 1048.79, "variation_pct": 110.5, "change_start": "2026-09-12T14:00:00Z" },
+  "anomaly": { "id": 3, "meter_id": "M-109", "type": "REAL_ANOMALY", "severity": "HIGH", "confidence": 0.96, "priority": 1,
+               "reason": "...", "recommended_action": "...", "status": "PENDING", "detected_at": "2026-09-15T08:05:00Z" },
+  "events": [{ "id": 3, "meter_id": "M-109", "timestamp": "2026-09-12T14:00:00Z", "type": "UNKNOWN", "description": "No operational event reported" }]
+}
+```
+
+Example — `GET /meters/M-109/readings?from=2026-09-14&to=2026-09-14`:
+
+```json
+{
+  "meter_id": "M-109",
+  "items": [{ "id": 3001, "meter_id": "M-109", "timestamp": "2026-09-14T00:00:00Z", "consumption_kwh": 68.45,
+              "voltage_v": 215.51, "current_a": 317.9, "power_factor": 0.719, "status": "OK" }],
+  "total": 24
+}
+```
+
+Integration tests run against the dockerized database:
+
+```bash
+docker compose up -d db
+cd backend && make test-integration
+```
 
 ## Roadmap
 
 1. ✅ **Base**: docker-compose, PostgreSQL, schema, CSV load and backend skeleton (`/health`).
-2. **Backend**: meters and readings endpoints.
+2. ✅ **Backend**: meters and readings endpoints.
 3. **engine-ai**: baseline, detection and classification.
 4. **AI**: LLM explanation and recommendation; analysis endpoints.
 5. **Frontend**: dashboard, meters, detail, anomalies and investigation.

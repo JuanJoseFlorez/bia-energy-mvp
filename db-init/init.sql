@@ -59,6 +59,24 @@ CREATE TABLE anomalies (
     status VARCHAR(20) DEFAULT 'PENDING'
 );
 
+-- Per-meter daily metrics computed by engine-ai on each analysis run
+CREATE TABLE meter_metrics (
+    analysis_id   INT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    meter_id      VARCHAR(50) NOT NULL REFERENCES meters(meter_id),
+    -- Consumption of the last 24 hours of data
+    current_kwh   NUMERIC NOT NULL,
+    -- Typical daily consumption over the reference period
+    baseline_kwh  NUMERIC NOT NULL,
+    -- (current_kwh - baseline_kwh) / baseline_kwh * 100
+    variation_pct NUMERIC NOT NULL,
+    -- Detected change point, NULL when no change was found
+    change_start  TIMESTAMP,
+    PRIMARY KEY (analysis_id, meter_id)
+);
+
+CREATE INDEX idx_analysis_runs_latest ON analysis_runs (status, finished_at DESC);
+CREATE INDEX idx_anomalies_run_meter ON anomalies (analysis_id, meter_id);
+
 -- Seed the 12 meters present in readings.csv
 INSERT INTO meters (meter_id, name, location) VALUES
 ('M-101', 'Meter 101', 'Planta A'), ('M-102', 'Meter 102', 'Planta A'),
