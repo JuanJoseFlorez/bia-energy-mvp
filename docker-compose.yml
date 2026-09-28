@@ -32,6 +32,8 @@ services:
       AI_ENGINE_TIMEOUT: ${AI_ENGINE_TIMEOUT:-120s}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEMO_USER: ${DEMO_USER:-demo}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-demo}
     depends_on:
       db:
         condition: service_healthy

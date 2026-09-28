@@ -47,6 +47,7 @@ func TestErrorMapping(t *testing.T) {
 		{"validation", fmt.Errorf("bad input: %w", apperr.ErrValidation), 400, "validation_error", "bad input: validation failed"},
 		{"not found", fmt.Errorf("meter M-999: %w", apperr.ErrNotFound), 404, "not_found", "meter M-999: not found"},
 		{"conflict", fmt.Errorf("run already active: %w", apperr.ErrConflict), 409, "conflict", "run already active: conflict"},
+		{"unauthorized", fmt.Errorf("invalid username or password: %w", apperr.ErrUnauthorized), 401, "unauthorized", "invalid username or password: unauthorized"},
 		{"unknown hides details", errors.New("db password leaked"), 500, "internal_error", "internal server error"},
 	}
 	for _, tt := range tests {

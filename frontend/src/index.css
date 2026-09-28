@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+/* BIA platform palette (dark only). */
+@theme {
+  --color-bg: #0b0c10;
+  --color-surface: #0f1015;
+  --color-surface-2: #16171d;
+  --color-border: #24262e;
+  --color-text: #e7e9ee;
+  --color-muted: #8a8f9c;
+  --color-primary: #14d9b5;
+  --color-primary-strong: #0e9f86;
+  --color-accent: #6d5dfc;
+  --color-danger: #ff6b6b;
+  --color-warning: #f5a524;
+  --color-info: #8ab4ff;
+  --color-neutral: #9aa0ac;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg font-sans text-text antialiased;
+    color-scheme: dark;
+  }
+}

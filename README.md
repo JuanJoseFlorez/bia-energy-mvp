@@ -30,7 +30,7 @@ Frontend (React/TS) ──HTTP──▶ Backend (Go, REST API) ──HTTP──�
 ```
 .
 ├── backend/            # Go REST API
-├── frontend/           # React + TypeScript app (pending)
+├── frontend/           # React + TypeScript app (Vite, Tailwind CSS, TanStack Query)
 ├── engine-ai/          # Python analysis engine (detection, classification, AI explanations)
 ├── db-init/
 │   ├── init.sql        # Schema, meter seed, CSV load
@@ -83,13 +83,16 @@ Created and seeded by `db-init/init.sql` on first Postgres start.
    | `LLM_MAX_CONCURRENCY` | Max simultaneous LLM calls per engine-ai process (default `4`) |
    | `LLM_TIMEOUT_SECONDS` | Seconds an analysis waits for LLM texts, retries included (default `20`) |
    | `AI_ENGINE_TIMEOUT` | Deadline for one whole analysis run, Go duration (default `120s`) |
+   | `DEMO_USER` / `DEMO_PASSWORD` | Demo login (default `demo` / `demo`) |
    | `VITE_API_URL`   | Backend URL used by the frontend (build time)      |
 
-2. Start the database, engine-ai and the backend API:
+2. Start the whole stack:
 
    ```bash
-   docker compose up --build db engine-ai backend
+   docker compose up --build
    ```
+
+   Open http://localhost:3000 and sign in with the demo user (`demo` / `demo` unless changed in `.env`).
 
    Then check the API is up:
 
@@ -139,12 +142,14 @@ make lint    # gofmt + go vet
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AI_ENGINE_URL` | `http://engine-ai:8000` | engine-ai base URL |
 | `AI_ENGINE_TIMEOUT` | `120s` | Deadline for one whole analysis run; keep well above `LLM_TIMEOUT_SECONDS` |
+| `DEMO_USER` / `DEMO_PASSWORD` | `demo` / `demo` | Demo login credentials |
 
 Endpoints:
 
 | Method | Path | Query params | Description |
 |---|---|---|---|
 | `GET` | `/health` | — | `200` if the database responds, `503` otherwise |
+| `POST` | `/auth/login` | body `{"username", "password"}` | Demo login: `200 {token, user}` or `401` |
 | `GET` | `/meters` | `status` (`all`\|`ok`\|`alert`\|`critical`), `q`, `sort` (`meter_id`\|`consumption`\|`variation`\|`severity`), `order` (`asc`\|`desc`), `limit` (1–200, default 50), `offset` | Meters with period consumption, daily metrics, health and top anomaly |
 | `GET` | `/meters/{meterId}` | — | Meter detail with full anomaly and events |
 | `GET` | `/meters/{meterId}/readings` | `from`, `to` (RFC3339 or `YYYY-MM-DD`, inclusive) | Hourly readings, ascending |
@@ -279,6 +284,37 @@ docker compose up -d db
 cd backend && make test-integration
 ```
 
+**The login is a demo mock:** `POST /auth/login` checks the single demo user and returns an opaque token, but no endpoint verifies it — the API itself is not protected. A real setup would sign the token and add an auth middleware.
+
+## Frontend (React)
+
+Single-page app in `frontend/` (Vite, React 19, TypeScript strict, Tailwind CSS v4, TanStack Query, React Router, Recharts). It talks only to the backend, at `VITE_API_URL` (build time, default `http://localhost:8080`).
+
+```
+frontend/src/
+├── api/           # fetch client (ApiError), backend JSON types, query hooks
+├── components/    # UI building blocks (Card, Badge, Button, KpiCard, …)
+├── lib/           # es-CO formatting, Spanish labels and colors per type/severity/status
+├── layout/        # app shell: sidebar, header with Run AI Analysis, run progress banner
+└── features/      # auth, analysis run tracking, dashboard, …
+```
+
+- **Run AI Analysis** lives in the header of every screen. Progress is a banner showing the seven pipeline steps from `current_step`, polled every second; it survives navigation and page reloads, follows an already active run on `409`, and ends with "N anomalías detectadas · M requieren atención prioritaria".
+- UI copy is Spanish; numbers use `es-CO` (`2.207,6 kWh`, `+109,7 %`); dataset timestamps are shown in UTC, like the engine's texts.
+
+Local development (backend on `:8080`):
+
+```bash
+cd frontend
+make install   # npm ci
+make run       # Vite dev server on http://localhost:3000
+make test      # Vitest + Testing Library
+make lint      # oxlint + tsc
+make build     # production build into dist/
+```
+
+In Docker the app is built with `VITE_API_URL` and served by nginx on port 80 (mapped to `3000`).
+
 ## engine-ai (Python)
 
 Analysis engine in `engine-ai/` (Python 3.12, FastAPI, pandas, LiteLLM). It reads `readings` and `events` (read-only), computes a per-meter baseline, runs the detectors, classifies each finding with generic rules and returns daily metrics plus prioritized anomalies with evidence and Spanish texts (reason, explanation, recommended action) written by an LLM or by templates. Internal service: no published ports; the backend reaches it at `AI_ENGINE_URL`.
@@ -411,5 +447,5 @@ Result on the seed data (the other 8 meters come out normal):
 2. ✅ **Backend**: meters and readings endpoints.
 3. ✅ **engine-ai**: baseline, detection and classification.
 4. ✅ **AI**: LLM explanation and recommendation; analysis endpoints.
-5. **Frontend**: dashboard, meters, detail, anomalies and investigation.
+5. **Frontend**: ✅ login, app shell, AI analysis run and dashboard; meters, detail, anomalies and investigation next.
 6. **Quality**: tests, documentation and demo script.

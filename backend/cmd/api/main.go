@@ -14,6 +14,7 @@ import (
 
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/analysis"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/anomaly"
+	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/auth"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/config"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/dashboard"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/health"
@@ -67,6 +68,7 @@ func run() error {
 			dashboard.NewHandler(dashboard.NewService(dashboard.NewRepository(pool))),
 			analysis.NewHandler(analyses),
 			anomaly.NewHandler(anomaly.NewService(anomaly.NewRepository(pool))),
+			auth.NewHandler(auth.NewService(cfg.DemoUser, cfg.DemoPassword)),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

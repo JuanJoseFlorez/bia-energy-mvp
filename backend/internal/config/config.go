@@ -25,6 +25,10 @@ type Config struct {
 
 	AIEngineURL     string
 	AIEngineTimeout time.Duration
+
+	// Demo login credentials (the login is a mock; the API itself is not protected).
+	DemoUser     string
+	DemoPassword string
 }
 
 var validLogLevels = map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
@@ -42,6 +46,9 @@ func Load() (Config, error) {
 		DBName:      strings.TrimSpace(os.Getenv("DB_NAME")),
 		LogLevel:    strings.ToLower(getOr("LOG_LEVEL", "info")),
 		AIEngineURL: strings.TrimRight(strings.TrimSpace(getOr("AI_ENGINE_URL", "http://engine-ai:8000")), "/"),
+		DemoUser:    strings.TrimSpace(getOr("DEMO_USER", "demo")),
+		// DEMO_PASSWORD is left untrimmed, like DB_PASSWORD.
+		DemoPassword: getOr("DEMO_PASSWORD", "demo"),
 	}
 
 	for _, req := range []struct{ name, value string }{

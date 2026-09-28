@@ -11,7 +11,7 @@ import (
 var allVars = []string{
 	"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME",
 	"HTTP_PORT", "CORS_ALLOWED_ORIGINS", "LOG_LEVEL",
-	"AI_ENGINE_URL", "AI_ENGINE_TIMEOUT",
+	"AI_ENGINE_URL", "AI_ENGINE_TIMEOUT", "DEMO_USER", "DEMO_PASSWORD",
 }
 
 // setEnv sets every known variable, using "" for the ones not in vals.
@@ -55,6 +55,27 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.AIEngineTimeout != 120*time.Second {
 		t.Errorf("AIEngineTimeout = %v, want 120s", cfg.AIEngineTimeout)
+	}
+	if cfg.DemoUser != "demo" || cfg.DemoPassword != "demo" {
+		t.Errorf("demo credentials = %q/%q, want demo/demo", cfg.DemoUser, cfg.DemoPassword)
+	}
+}
+
+func TestLoadDemoCredentials(t *testing.T) {
+	env := validEnv()
+	env["DEMO_USER"] = " evaluator "
+	env["DEMO_PASSWORD"] = " s3cret "
+	setEnv(t, env)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DemoUser != "evaluator" {
+		t.Errorf("DemoUser = %q, want evaluator", cfg.DemoUser)
+	}
+	if cfg.DemoPassword != " s3cret " {
+		t.Errorf("DemoPassword = %q, want it untrimmed", cfg.DemoPassword)
 	}
 }
 
