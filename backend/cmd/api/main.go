@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/analysis"
+	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/anomaly"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/config"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/dashboard"
 	"github.com/JuanJoseFlorez/bia-energy-mvp/backend/internal/health"
@@ -51,12 +53,20 @@ func run() error {
 	}
 	defer pool.Close()
 
+	analyses := analysis.NewService(analysis.NewRepository(pool), analysis.NewEngineClient(cfg.AIEngineURL), cfg.AIEngineTimeout)
+	// Runs left active by a previous process that died are failed before serving.
+	if err := analyses.SweepStale(ctx); err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.HTTPPort),
 		Handler: newRouter(log, cfg.CORSAllowedOrigins,
 			health.NewHandler(pool, healthTimeout),
 			meter.NewHandler(meter.NewService(meter.NewRepository(pool))),
 			dashboard.NewHandler(dashboard.NewService(dashboard.NewRepository(pool))),
+			analysis.NewHandler(analyses),
+			anomaly.NewHandler(anomaly.NewService(anomaly.NewRepository(pool))),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -85,6 +95,10 @@ func run() error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
+	}
+	// Cancel in-flight analyses (they end FAILED) while the pool can still record it.
+	if err := analyses.Shutdown(shutdownCtx); err != nil {
+		log.Warn("analysis still running at shutdown", "error", err)
 	}
 	pool.Close() // idempotent; also deferred above for early-return paths
 	log.Info("shutdown complete")

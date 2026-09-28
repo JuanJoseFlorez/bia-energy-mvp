@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all settings the API needs at startup.
@@ -21,6 +22,9 @@ type Config struct {
 	HTTPPort           int
 	CORSAllowedOrigins []string
 	LogLevel           string
+
+	AIEngineURL     string
+	AIEngineTimeout time.Duration
 }
 
 var validLogLevels = map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
@@ -34,9 +38,10 @@ func Load() (Config, error) {
 		DBHost: strings.TrimSpace(os.Getenv("DB_HOST")),
 		DBUser: strings.TrimSpace(os.Getenv("DB_USER")),
 		// DB_PASSWORD is left untrimmed: a password may legitimately contain spaces.
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     strings.TrimSpace(os.Getenv("DB_NAME")),
-		LogLevel:   strings.ToLower(getOr("LOG_LEVEL", "info")),
+		DBPassword:  os.Getenv("DB_PASSWORD"),
+		DBName:      strings.TrimSpace(os.Getenv("DB_NAME")),
+		LogLevel:    strings.ToLower(getOr("LOG_LEVEL", "info")),
+		AIEngineURL: strings.TrimRight(strings.TrimSpace(getOr("AI_ENGINE_URL", "http://engine-ai:8000")), "/"),
 	}
 
 	for _, req := range []struct{ name, value string }{
@@ -56,6 +61,12 @@ func Load() (Config, error) {
 	}
 	if cfg.HTTPPort, problem = parsePort("HTTP_PORT", 8080); problem != "" {
 		problems = append(problems, problem)
+	}
+	if cfg.AIEngineTimeout, problem = parseDuration("AI_ENGINE_TIMEOUT", 120*time.Second); problem != "" {
+		problems = append(problems, problem)
+	}
+	if u, err := url.Parse(cfg.AIEngineURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		problems = append(problems, fmt.Sprintf("AI_ENGINE_URL %q must be an absolute http or https URL", cfg.AIEngineURL))
 	}
 	if !validLogLevels[cfg.LogLevel] {
 		problems = append(problems, fmt.Sprintf("LOG_LEVEL %q must be one of debug, info, warn, error", cfg.LogLevel))
@@ -102,6 +113,19 @@ func parsePort(key string, fallback int) (int, string) {
 		return 0, fmt.Sprintf("%s %q must be an integer between 1 and 65535", key, raw)
 	}
 	return port, ""
+}
+
+// parseDuration returns a positive Go duration (e.g. "120s", "2m") and, if invalid, a problem description.
+func parseDuration(key string, fallback time.Duration) (time.Duration, string) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, ""
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Sprintf("%s %q must be a positive duration such as 120s or 2m", key, raw)
+	}
+	return d, ""
 }
 
 // parseList splits a comma-separated value, trimming spaces and dropping empty items.

@@ -33,15 +33,24 @@ CREATE TABLE analysis_runs (
     id SERIAL PRIMARY KEY,
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
         CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')),
+    -- Last pipeline step reported by engine-ai (READINGS ... RECOMMENDATION), NULL before the first
+    current_step VARCHAR(30),
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Heartbeat: bumped on every status/step change; stale active runs are failed by age
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at TIMESTAMP,
     -- e.g. {"anomalies_detected": 4, "high_priority": 2}
-    summary JSONB
+    summary JSONB,
+    -- Client-safe failure message, NULL unless FAILED
+    error TEXT
 );
+
+-- At most one active run at a time (a second concurrent insert conflicts)
+CREATE UNIQUE INDEX uq_analysis_runs_active ON analysis_runs ((1)) WHERE status IN ('PENDING', 'RUNNING');
 
 CREATE TABLE anomalies (
     id SERIAL PRIMARY KEY,
-    analysis_id INT NOT NULL REFERENCES analysis_runs(id),
+    analysis_id INT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
     meter_id VARCHAR(50) REFERENCES meters(meter_id),
     detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     type VARCHAR(50)
@@ -60,7 +69,9 @@ CREATE TABLE anomalies (
     explanation_source VARCHAR(10) CHECK (explanation_source IN ('llm', 'template')),
     -- Supporting data, e.g. baseline_kwh, current_kwh, variation_pct, changed_vars, related_event_ids
     evidence JSONB,
-    status VARCHAR(20) DEFAULT 'PENDING'
+    -- Action workflow; allowed transitions are enforced by the backend
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'INVESTIGATING', 'VALIDATED', 'DISMISSED', 'RESOLVED'))
 );
 
 -- Per-meter daily metrics computed by engine-ai on each analysis run
