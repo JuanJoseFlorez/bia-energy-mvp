@@ -1,7 +1,20 @@
-import { QueryClient, useMutation, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiFetch, isApiError } from './client'
-import type { AnalysisRun, AnomalyList, AnomalyType, DashboardSummary, Session, Severity, AnomalyStatus } from './types'
+import type {
+  AnalysisRun,
+  AnomalyDetail,
+  AnomalyList,
+  AnomalyStatus,
+  AnomalyType,
+  DashboardSummary,
+  ListResult,
+  Meter,
+  MeterDetail,
+  ReadingsResult,
+  Session,
+  Severity,
+} from './types'
 
 export interface AnomalyFilters {
   analysis_id?: number
@@ -10,9 +23,25 @@ export interface AnomalyFilters {
   status?: AnomalyStatus
 }
 
+export interface MeterListParams {
+  status?: 'all' | 'ok' | 'alert' | 'critical'
+  q?: string
+  sort?: 'meter_id' | 'consumption' | 'variation' | 'severity'
+  order?: 'asc' | 'desc'
+}
+
+export interface ReadingsWindow {
+  from: string
+  to: string
+}
+
 export const queryKeys = {
   dashboard: ['dashboard'] as const,
+  meters: (params: MeterListParams) => ['meters', params] as const,
+  meter: (meterId: string) => ['meter', meterId] as const,
+  readings: (meterId: string, window: ReadingsWindow | null) => ['readings', meterId, window?.from ?? null, window?.to ?? null] as const,
   anomalies: (filters: AnomalyFilters) => ['anomalies', filters] as const,
+  anomaly: (id: number) => ['anomaly', id] as const,
   latestAnalysis: ['analysis', 'latest'] as const,
   analysis: (id: number) => ['analysis', id] as const,
 }
@@ -62,6 +91,51 @@ export function useAnomalies(filters: AnomalyFilters, options: { enabled?: boole
     queryKey: queryKeys.anomalies(filters),
     queryFn: ({ signal }) => apiFetch<AnomalyList>(`/anomalies${toQueryString(filters)}`, { signal }),
     enabled: options.enabled ?? true,
+  })
+}
+
+export function useMeters(params: MeterListParams) {
+  return useQuery({
+    queryKey: queryKeys.meters(params),
+    queryFn: ({ signal }) => apiFetch<ListResult<Meter>>(`/meters${toQueryString(params)}`, { signal }),
+    placeholderData: keepPreviousData, // keep the table while a new filter loads
+  })
+}
+
+export function useMeter(meterId: string) {
+  return useQuery({
+    queryKey: queryKeys.meter(meterId),
+    queryFn: ({ signal }) => apiFetch<MeterDetail>(`/meters/${encodeURIComponent(meterId)}`, { signal }),
+  })
+}
+
+/** Hourly readings of a meter, the whole period or only the given window. */
+export function useReadings(meterId: string | null, window: ReadingsWindow | null = null) {
+  return useQuery({
+    queryKey: queryKeys.readings(meterId ?? '', window),
+    queryFn: ({ signal }) =>
+      apiFetch<ReadingsResult>(`/meters/${encodeURIComponent(meterId ?? '')}/readings${toQueryString(window ?? {})}`, { signal }),
+    enabled: meterId !== null,
+  })
+}
+
+export function useAnomaly(id: number | null) {
+  return useQuery({
+    queryKey: queryKeys.anomaly(id ?? 0),
+    queryFn: ({ signal }) => apiFetch<AnomalyDetail>(`/anomalies/${id}`, { signal }),
+    enabled: id !== null,
+  })
+}
+
+/** Moves an anomaly along the action workflow and refreshes everything that shows its status. */
+export function useUpdateAnomalyStatus(id: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (status: AnomalyStatus) => apiFetch<AnomalyDetail>(`/anomalies/${id}`, { method: 'PATCH', body: { status } }),
+    onSuccess: (detail) => {
+      queryClient.setQueryData(queryKeys.anomaly(id), detail)
+      for (const key of ['anomalies', 'meter', 'meters', 'dashboard']) void queryClient.invalidateQueries({ queryKey: [key] })
+    },
   })
 }
 

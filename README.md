@@ -296,10 +296,11 @@ frontend/src/
 ├── components/    # UI building blocks (Card, Badge, Button, KpiCard, …)
 ├── lib/           # es-CO formatting, Spanish labels and colors per type/severity/status
 ├── layout/        # app shell: sidebar, header with Run AI Analysis, run progress banner
-└── features/      # auth, analysis run tracking, dashboard, …
+└── features/      # auth, analysis run, dashboard, meters, anomalies/investigation
 ```
 
 - **Run AI Analysis** lives in the header of every screen. Progress is a banner showing the seven pipeline steps from `current_step`, polled every second; it survives navigation and page reloads, follows an already active run on `409`, and ends with "N anomalías detectadas · M requieren atención prioritaria".
+- **Screens:** Dashboard (KPIs, "Qué investigar primero", breakdown by type) → Medidores (filters all/normal/alert/critical, search, sort — kept in the URL) → meter detail (consumption vs baseline, hourly or daily, with change window, outliers and events; voltage, current and power factor) → Anomalías IA (priority order, confidence, recommended action) → Investigación (what the AI found, baseline comparison, changed variables, evidence, and the action workflow buttons).
 - UI copy is Spanish; numbers use `es-CO` (`2.207,6 kWh`, `+109,7 %`); dataset timestamps are shown in UTC, like the engine's texts.
 
 Local development (backend on `:8080`):
@@ -447,5 +448,5 @@ Result on the seed data (the other 8 meters come out normal):
 2. ✅ **Backend**: meters and readings endpoints.
 3. ✅ **engine-ai**: baseline, detection and classification.
 4. ✅ **AI**: LLM explanation and recommendation; analysis endpoints.
-5. **Frontend**: ✅ login, app shell, AI analysis run and dashboard; meters, detail, anomalies and investigation next.
+5. ✅ **Frontend**: login, dashboard, meters, detail, anomalies, investigation and action workflow.
 6. **Quality**: tests, documentation and demo script.
