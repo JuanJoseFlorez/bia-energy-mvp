@@ -21,11 +21,11 @@ READINGS_COLUMNS = [
 ]
 
 EVENTS_SQL = """
-SELECT id, meter_id, event_timestamp, event_type
+SELECT id, meter_id, event_timestamp, event_type, description
 FROM events
 ORDER BY id
 """
-EVENTS_COLUMNS = ["id", "meter_id", "event_timestamp", "event_type"]
+EVENTS_COLUMNS = ["id", "meter_id", "event_timestamp", "event_type", "description"]
 
 
 def create_pool(conninfo: str) -> ConnectionPool:

@@ -49,3 +49,35 @@ def test_only_false_positive_is_not_an_anomaly():
     evidence = Evidence(1.0, 1.0, 0.0, None, True)
     for kind in ("REAL_ANOMALY", "EXPLAINABLE_ANOMALY", "DATA_QUALITY"):
         assert Anomaly("X-1", kind, "HIGH", 0.9, evidence).anomaly is True
+
+
+def test_anomaly_to_dict_carries_texts_before_evidence():
+    evidence = Evidence(1.0, 1.0, 0.0, None, True)
+    anomaly = Anomaly(
+        "X-1",
+        "REAL_ANOMALY",
+        "HIGH",
+        0.9,
+        evidence,
+        priority=1,
+        reason="Motivo.",
+        explanation="Explicación.",
+        recommended_action="Investigar medidor e instalación. Paso.",
+        explanation_source="template",
+    )
+    out = anomaly.to_dict()
+    assert list(out) == [
+        "meter_id",
+        "anomaly",
+        "type",
+        "severity",
+        "confidence",
+        "priority",
+        "reason",
+        "explanation",
+        "recommended_action",
+        "explanation_source",
+        "evidence",
+    ]
+    assert out["recommended_action"] == "Investigar medidor e instalación. Paso."
+    assert out["explanation_source"] == "template"

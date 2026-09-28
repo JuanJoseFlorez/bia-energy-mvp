@@ -6,6 +6,7 @@ def test_real_csv_fixtures(real_readings, real_events):
     assert real_readings["meter_id"].nunique() == 12
     assert list(real_events["id"]) == [1, 2, 3, 4]
     assert str(real_events["event_timestamp"].dtype).startswith("datetime64")
+    assert real_events["description"].map(bool).all()
 
 
 def test_make_series_is_deterministic_and_hourly():

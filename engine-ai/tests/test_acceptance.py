@@ -96,3 +96,52 @@ def test_m106_transient_inside_outage(by_meter):
 def test_deterministic(real_readings, real_events, result):
     again = list(run_analysis(real_readings, real_events))[-1]
     assert again == result
+
+
+ACTION_BASE_BY_METER = {
+    "M-109": "Investigar medidor e instalación. ",
+    "M-112": "Validar medidor / lecturas. ",
+    "M-104": "Validar operación. ",
+    "M-106": "No escalar. ",
+}
+
+
+def test_template_texts_without_llm(by_meter):
+    for meter_id, prefix in ACTION_BASE_BY_METER.items():
+        a = by_meter[meter_id]
+        assert a["explanation_source"] == "template", meter_id
+        assert a["reason"] and a["explanation"], meter_id
+        assert a["recommended_action"].startswith(prefix), meter_id
+        assert len(a["recommended_action"]) > len(prefix), meter_id
+
+
+def test_template_texts_cite_the_key_numbers(by_meter):
+    m109, m112, m104, m106 = (by_meter[m] for m in ("M-109", "M-112", "M-104", "M-106"))
+    assert m109["reason"] == (
+        "Consumo +109,7 % sobre el baseline desde el 12-sep 14:00, sin evento operativo que "
+        "lo explique."
+    )
+    assert "0,94 → 0,74" in m109["explanation"]
+    assert "1.052,7 kWh a 2.207,6 kWh" in m109["explanation"]
+    for label in (
+        "voltaje fuera de rango (16 h)",
+        "saltos de voltaje (31 h)",
+        "saltos de corriente con consumo plano (29 h)",
+        "kWh inconsistente con V·I·PF (8 h)",
+        "saltos de factor de potencia (24 h)",
+    ):
+        assert label in m112["explanation"]
+    assert m112["reason"] == "Consumo estable (+0,0 %) con lecturas eléctricas inconsistentes."
+    assert m104["reason"] == (
+        "Consumo +47,8 % desde el 11-sep 00:00, coincide con un cambio operativo registrado."
+    )
+    assert m106["reason"] == "Caída transitoria de 12 h (-79,7 %) dentro de una parada programada."
+    assert m106["recommended_action"] == (
+        "No escalar. Registrar como explicado por la parada programada."
+    )
+
+
+def test_event_descriptions_stay_out_of_template_texts(by_meter, real_events):
+    texts = " ".join(a["reason"] + a["explanation"] for a in by_meter.values())
+    for description in real_events["description"]:
+        assert description not in texts

@@ -2,7 +2,7 @@
 
 MVP to manage electric meters and use AI to **detect, explain, prioritize and recommend actions** on consumption anomalies.
 
-> Status: **work in progress**. Database and orchestration, the backend read API and the engine-ai detection service are ready; LLM explanations, analysis endpoints and frontend pending.
+> Status: **work in progress**. Database and orchestration, the backend read API and the engine-ai service (detection, classification and AI explanations) are ready; analysis endpoints and frontend pending.
 
 ## Stack
 
@@ -31,7 +31,7 @@ Frontend (React/TS) ──HTTP──▶ Backend (Go, REST API) ──HTTP──�
 .
 ├── backend/            # Go REST API
 ├── frontend/           # React + TypeScript app (pending)
-├── engine-ai/          # Python analysis engine (detection and classification)
+├── engine-ai/          # Python analysis engine (detection, classification, AI explanations)
 ├── db-init/
 │   ├── init.sql        # Schema, meter seed, CSV load
 │   ├── readings.csv    # Hourly readings
@@ -55,7 +55,7 @@ Created and seeded by `db-init/init.sql` on first Postgres start.
 | `readings`      | Time series per meter             | `meter_id`, `timestamp`, `consumption_kwh`, `voltage_v`, `current_a`, `power_factor`         |
 | `events`        | Known operational events          | `meter_id`, `event_timestamp`, `event_type`, `description`                                   |
 | `analysis_runs` | One row per AI analysis execution | `status` (`PENDING`/`RUNNING`/`COMPLETED`/`FAILED`), `started_at`, `finished_at`, `summary` |
-| `anomalies`     | Analysis result per meter         | `analysis_id`, `type`, `severity`, `confidence`, `priority`, `reason`, `recommended_action`, `evidence` |
+| `anomalies`     | Analysis result per meter         | `analysis_id`, `type`, `severity`, `confidence`, `priority`, `reason`, `explanation`, `recommended_action`, `explanation_source` (`llm`/`template`), `evidence` |
 
 - `type`: `REAL_ANOMALY`, `EXPLAINABLE_ANOMALY`, `FALSE_POSITIVE`, `DATA_QUALITY`
 - `severity`: `LOW`, `MEDIUM`, `HIGH`
@@ -76,8 +76,10 @@ Created and seeded by `db-init/init.sql` on first Postgres start.
    | `DB_PASSWORD`    | Postgres password                                  |
    | `DB_NAME`        | Database name                                      |
    | `DB_HOST_PORT`   | Host port for Postgres (default `5432`)            |
-   | `LLM_MODEL`      | LLM as `provider/model` (e.g. `gemini/gemini-2.0-flash`) |
+   | `LLM_MODEL`      | LLM as `provider/model` (e.g. `gemini/gemini-3.8-flash`) |
    | `LLM_API_KEY`    | LLM API key (empty = template explanations)        |
+   | `LLM_MAX_CONCURRENCY` | Max simultaneous LLM calls per engine-ai process (default `4`) |
+   | `LLM_TIMEOUT_SECONDS` | Seconds an analysis waits for LLM texts, retries included (default `20`) |
    | `VITE_API_URL`   | Backend URL used by the frontend (build time)      |
 
 2. Start the database and the backend API:
@@ -210,7 +212,7 @@ cd backend && make test-integration
 
 ## engine-ai (Python)
 
-Deterministic analysis engine in `engine-ai/` (Python 3.12, FastAPI, pandas). It reads `readings` and `events` (read-only), computes a per-meter baseline, runs the detectors, classifies each finding with generic rules and returns daily metrics plus prioritized anomalies with evidence. No LLM yet: explanations and recommendations come in the next phase. Internal service: no published ports; the backend reaches it at `AI_ENGINE_URL`.
+Analysis engine in `engine-ai/` (Python 3.12, FastAPI, pandas, LiteLLM). It reads `readings` and `events` (read-only), computes a per-meter baseline, runs the detectors, classifies each finding with generic rules and returns daily metrics plus prioritized anomalies with evidence and Spanish texts (reason, explanation, recommended action) written by an LLM or by templates. Internal service: no published ports; the backend reaches it at `AI_ENGINE_URL`.
 
 ```
 engine-ai/
@@ -218,6 +220,11 @@ engine-ai/
 │   ├── main.py          # composition root: settings, JSON logging, DB pool, app
 │   ├── api.py           # GET /health, POST /analyze
 │   ├── loader.py        # read-only SQL -> DataFrames (only module touching the DB)
+│   ├── explanation/     # Spanish texts for each anomaly
+│   │   ├── facts.py     # evidence -> Spanish facts, prompt input, grounding tokens
+│   │   ├── templates.py # base action per type, template texts
+│   │   ├── review.py    # validates LLM drafts (schema, lengths, grounding)
+│   │   └── llm.py       # LiteLLM calls through a bounded pool (only module importing litellm)
 │   └── analysis/        # pure core: DataFrames in, result out, no I/O
 │       ├── pipeline.py  # runs the steps, yields progress events and the result
 │       ├── baseline.py  # reference window, hour-of-day profile, daily metrics
@@ -239,6 +246,7 @@ make run               # loads ../.env, serves on localhost:8000
 make test              # unit + acceptance tests, no Docker needed
 make lint              # ruff check + ruff format --check
 make test-integration  # loader against the dockerized DB
+make test-llm          # asks the real LLM (LLM_MODEL / LLM_API_KEY from ../.env) about the seed anomalies
 ```
 
 Endpoints:
@@ -258,6 +266,8 @@ curl -N -X POST localhost:8000/analyze
 {"type": "step", "step": "DETECTION"}
 {"type": "step", "step": "CORRELATION"}
 {"type": "step", "step": "EVENTS"}
+{"type": "step", "step": "EXPLANATION"}
+{"type": "step", "step": "RECOMMENDATION"}
 {"type": "result", "metrics": [...], "anomalies": [...]}
 ```
 
@@ -265,6 +275,10 @@ A load failure before the stream starts returns `503`; an exception during the a
 
 ```json
 {"meter_id": "M-109", "anomaly": true, "type": "REAL_ANOMALY", "severity": "HIGH", "confidence": 0.99, "priority": 1,
+ "reason": "Consumo +109,7 % sobre el baseline desde el 12-sep 14:00, sin evento operativo que lo explique.",
+ "explanation": "El consumo diario pasó de un baseline de 1.052,7 kWh a 2.207,6 kWh (+109,7 %). ...",
+ "recommended_action": "Investigar medidor e instalación. Revisar la carga conectada desde el 12-sep 14:00 y la caída del factor de potencia.",
+ "explanation_source": "template",
  "evidence": {"baseline_kwh": 1052.7, "current_kwh": 2207.6, "variation_pct": 109.71,
    "change_start": "2026-09-12T14:00:00Z", "baseline_reliable": true, "shift_pct": 109.3, "effect_size": 29.71,
    "changed_vars": {"power_factor": {"before": 0.94, "after": 0.74}, "current_a": {"before": 195.35, "after": 411.07},
@@ -273,6 +287,16 @@ A load failure before the stream starts returns `503`; an exception during the a
    "profile_correlation": 0.98, "related_event_ids": [3],
    "signals": ["no_explaining_event", "power_factor_drop", "power_ratio_shift", "current_follows"]}}
 ```
+
+### AI explanations
+
+The LLM explains; it never decides. For every anomaly the engine turns the evidence into Spanish facts (`1.052,7 kWh`, `+109,7 %`, `12-sep 14:00`) and asks the LLM, through LiteLLM, for a JSON object with `reason` (one line), `explanation` (a paragraph) and `action_detail`.
+
+- **Action anchoring.** The action category is fixed by type: `REAL_ANOMALY` → "Investigar medidor e instalación", `DATA_QUALITY` → "Validar medidor / lecturas", `EXPLAINABLE_ANOMALY` → "Validar operación", `FALSE_POSITIVE` → "No escalar". `recommended_action` = base action + the LLM's detail, so a false positive can never be escalated.
+- **Guardrails.** A draft is used only if it has exactly the three non-empty text fields, respects the length limits (160 / 600 / 200 characters) and passes the grounding check: every number, date and time in it must appear in the facts the LLM received, and the meter id itself is never part of that pool. A number's tolerance follows its own written precision: a value written with *d* decimal digits (thousands dots don't count) matches an allowed number within half its last digit (e.g. "110 %" matches "+109,7 %", but "0,84" does not match "0,74"). A percentage in the output is grounded only against percentages in the facts, never against a plain number. Otherwise that anomaly gets the template texts.
+- **Fallback and provenance.** Without `LLM_MODEL` and `LLM_API_KEY`, or when a call fails, times out or its draft is rejected, deterministic templates write the texts. `explanation_source` says which one (`llm` / `template`); `type`, `severity`, `confidence`, `priority` and `evidence` are identical either way.
+- **Limits and retries.** One draft per anomaly through one process-wide pool of `LLM_MAX_CONCURRENCY` threads (default 4); an analysis waits at most `LLM_TIMEOUT_SECONDS` (default 20) for all drafts, retries included. Transient provider errors (5xx, 429, connection errors, call timeouts) get up to 2 retries with ~1 s / ~2 s backoff (`Retry-After` honored when the provider sends one); a draft that fails the checks gets 1 more attempt; client errors (e.g. 404 unknown model) are not retried. A retry is skipped and the draft fails as `timeout` when its pause (backoff or `Retry-After`) would not fit before the deadline — it never sleeps a partial pause. No `temperature` is sent (provider default). The API key is never logged.
+- **Switching provider** is a `.env` change: `LLM_MODEL=openai/gpt-4o-mini` plus that provider's key.
 
 ### Detection approach
 
