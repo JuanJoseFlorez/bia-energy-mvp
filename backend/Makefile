@@ -2,10 +2,10 @@
 
 ENV_FILE ?= ../.env
 
-# Runs the API locally against the dockerized DB (docker compose up db).
+# Runs the API locally against the dockerized DB (docker compose up db) and a local engine-ai (cd ../engine-ai && make run).
 run:
 	@set -a; . $(ENV_FILE); set +a; \
-	DB_HOST=localhost DB_PORT=$${DB_HOST_PORT:-5432} go run ./cmd/api
+	DB_HOST=localhost DB_PORT=$${DB_HOST_PORT:-5432} AI_ENGINE_URL=$${AI_ENGINE_URL:-http://localhost:8000} go run ./cmd/api
 
 test:
 	go test ./...

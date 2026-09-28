@@ -54,13 +54,15 @@ Created and seeded by `db-init/init.sql` on first Postgres start.
 | `meters`        | Meters                            | `meter_id` (unique), `name`, `location`, `status`                                            |
 | `readings`      | Time series per meter             | `meter_id`, `timestamp`, `consumption_kwh`, `voltage_v`, `current_a`, `power_factor`         |
 | `events`        | Known operational events          | `meter_id`, `event_timestamp`, `event_type`, `description`                                   |
-| `analysis_runs` | One row per AI analysis execution | `status` (`PENDING`/`RUNNING`/`COMPLETED`/`FAILED`), `started_at`, `finished_at`, `summary` |
-| `anomalies`     | Analysis result per meter         | `analysis_id`, `type`, `severity`, `confidence`, `priority`, `reason`, `explanation`, `recommended_action`, `explanation_source` (`llm`/`template`), `evidence` |
+| `analysis_runs` | One row per AI analysis execution | `status` (`PENDING`/`RUNNING`/`COMPLETED`/`FAILED`), `current_step`, `started_at`, `updated_at` (heartbeat), `finished_at`, `summary`, `error` |
+| `anomalies`     | Analysis result per meter         | `analysis_id`, `type`, `severity`, `confidence`, `priority`, `reason`, `explanation`, `recommended_action`, `explanation_source` (`llm`/`template`), `evidence`, `status` (action workflow) |
+| `meter_metrics` | Daily metrics per meter and run   | `analysis_id`, `meter_id`, `current_kwh`, `baseline_kwh`, `variation_pct`, `change_start` |
 
 - `type`: `REAL_ANOMALY`, `EXPLAINABLE_ANOMALY`, `FALSE_POSITIVE`, `DATA_QUALITY`
 - `severity`: `LOW`, `MEDIUM`, `HIGH`
 - `confidence`: 0 to 1
 - `priority`: investigation order within a run (1 = first)
+- A partial unique index (`uq_analysis_runs_active`) allows at most one `PENDING`/`RUNNING` run at a time.
 
 ## Getting started
 
@@ -80,12 +82,13 @@ Created and seeded by `db-init/init.sql` on first Postgres start.
    | `LLM_API_KEY`    | LLM API key (empty = template explanations)        |
    | `LLM_MAX_CONCURRENCY` | Max simultaneous LLM calls per engine-ai process (default `4`) |
    | `LLM_TIMEOUT_SECONDS` | Seconds an analysis waits for LLM texts, retries included (default `20`) |
+   | `AI_ENGINE_TIMEOUT` | Deadline for one whole analysis run, Go duration (default `120s`) |
    | `VITE_API_URL`   | Backend URL used by the frontend (build time)      |
 
-2. Start the database and the backend API:
+2. Start the database, engine-ai and the backend API:
 
    ```bash
-   docker compose up --build db backend
+   docker compose up --build db engine-ai backend
    ```
 
    Then check the API is up:
@@ -106,7 +109,11 @@ backend/
 └── internal/
     ├── config/              # env loading + validation
     ├── platform/            # cross-cutting: apperr, database, httpx, logger
-    └── health/              # GET /health (template for new domains)
+    ├── health/              # GET /health (template for new domains)
+    ├── meter/               # meters list, detail, readings
+    ├── dashboard/           # platform KPIs
+    ├── analysis/            # AI analysis runs: start, progress, persistence of results
+    └── anomaly/             # anomalies list, detail and action workflow
 ```
 
 Each business domain is one package with `model.go`, `repository.go`, `service.go` and `handler.go` as needed. Services wrap `apperr` errors; handlers respond through `httpx`, which maps them to HTTP status codes with a single error format:
@@ -120,7 +127,7 @@ Local development (DB in Docker, API on the host):
 ```bash
 docker compose up -d db
 cd backend
-make run     # loads ../.env, connects to localhost:$DB_HOST_PORT
+make run     # loads ../.env, connects to localhost:$DB_HOST_PORT and engine-ai at localhost:8000
 make test    # unit tests, no Docker needed
 make lint    # gofmt + go vet
 ```
@@ -130,6 +137,8 @@ make lint    # gofmt + go vet
 | `HTTP_PORT` | `8080` | API port |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `AI_ENGINE_URL` | `http://engine-ai:8000` | engine-ai base URL |
+| `AI_ENGINE_TIMEOUT` | `120s` | Deadline for one whole analysis run; keep well above `LLM_TIMEOUT_SECONDS` |
 
 Endpoints:
 
@@ -140,6 +149,12 @@ Endpoints:
 | `GET` | `/meters/{meterId}` | — | Meter detail with full anomaly and events |
 | `GET` | `/meters/{meterId}/readings` | `from`, `to` (RFC3339 or `YYYY-MM-DD`, inclusive) | Hourly readings, ascending |
 | `GET` | `/dashboard/summary` | — | Platform KPIs |
+| `POST` | `/ai/analyze` | — | Start an analysis run: `202` with the run and `Location`, `409` if one is already active |
+| `GET` | `/ai/analysis/{id}` | — | Run status, current step, summary and error |
+| `GET` | `/ai/analysis/latest` | — | Most recently started run (`404` before the first one) |
+| `GET` | `/anomalies` | `analysis_id` (default: latest completed run), `type`, `severity`, `status` | Anomalies of one run in priority order |
+| `GET` | `/anomalies/{id}` | — | Anomaly with explanation, evidence, related events, readings window and allowed next statuses |
+| `PATCH` | `/anomalies/{id}` | body `{"status": "..."}` | Move the anomaly along the action workflow |
 
 `health`, `metrics` and `anomaly` are `null` until an analysis run has completed. Timestamps are RFC3339 UTC.
 
@@ -202,6 +217,60 @@ Example — `GET /meters/M-109/readings?from=2026-09-14&to=2026-09-14`:
   "total": 24
 }
 ```
+
+### AI analysis runs
+
+`POST /ai/analyze` inserts a `PENDING` run and returns at once; a background goroutine then:
+
+1. sets the run `RUNNING` and calls engine-ai `POST /analyze`, which streams NDJSON lines;
+2. stores every `step` line in `current_step` (`READINGS → BASELINE → DETECTION → CORRELATION → EVENTS → EXPLANATION → RECOMMENDATION`) and bumps `updated_at`;
+3. on the `result` line writes `meter_metrics`, `anomalies` and `summary` in one transaction and sets `COMPLETED`.
+
+Clients poll `GET /ai/analysis/{id}` until `COMPLETED` or `FAILED`:
+
+```bash
+curl -i -X POST localhost:8080/ai/analyze          # 202, Location: /ai/analysis/1
+curl localhost:8080/ai/analysis/1                   # repeat until status is COMPLETED
+curl localhost:8080/anomalies                       # latest completed run, priority order
+```
+
+```json
+{
+  "id": 1, "status": "COMPLETED", "current_step": "RECOMMENDATION",
+  "started_at": "2026-09-27T10:00:00Z", "updated_at": "2026-09-27T10:00:03Z", "finished_at": "2026-09-27T10:00:03Z",
+  "summary": { "anomalies_detected": 4, "high_priority": 2 },
+  "error": null
+}
+```
+
+Failure handling:
+
+| Situation | Run ends | `error` |
+|---|---|---|
+| Run exceeds `AI_ENGINE_TIMEOUT` | `FAILED` | `analysis timed out` |
+| engine-ai unreachable or non-200 | `FAILED` | `analysis engine unavailable` |
+| engine-ai streams an `error` line | `FAILED` | `analysis engine failed` |
+| Stream ends without a result | `FAILED` | `analysis engine returned no result` |
+| Results cannot be stored | `FAILED` | `could not save analysis results` |
+| Backend shuts down mid-run | `FAILED` | `interrupted by shutdown` |
+| Backend crashed mid-run | `FAILED` on next start or POST, once `updated_at` is older than `AI_ENGINE_TIMEOUT` + 30 s | `interrupted: backend restarted` |
+
+Only one run can be active (`409 Conflict` otherwise); the database enforces it with a partial unique index, so concurrent POSTs cannot both start a run.
+
+**Known limitation:** runs execute inside the backend process. A crashed backend leaves its run active until the stale threshold passes. The next step, if needed, is a database-backed queue (a worker claiming `PENDING` runs with `SELECT … FOR UPDATE SKIP LOCKED`), then an external queue.
+
+### Anomalies and action workflow
+
+`GET /anomalies/{id}` adds `explanation`, the engine's `evidence` (verbatim), `related_events`, `readings_window` and `next_statuses`. `readings_window` is `{from, to}` for charting: 7 days on each side of the change start (else the transient start, else the earliest outlier, else the last reading), clamped to the meter's data; fetch the readings with `GET /meters/{meterId}/readings?from=…&to=…`. `anomaly` is `false` only for `FALSE_POSITIVE`.
+
+`PATCH /anomalies/{id}` with `{"status": "INVESTIGATING"}` follows this table; anything else returns `409`:
+
+| From | To |
+|---|---|
+| `PENDING` | `INVESTIGATING`, `VALIDATED`, `DISMISSED` |
+| `INVESTIGATING` | `VALIDATED`, `RESOLVED`, `DISMISSED` |
+| `VALIDATED` | `RESOLVED` |
+| `RESOLVED`, `DISMISSED` | — (terminal) |
 
 Integration tests run against the dockerized database:
 
@@ -341,6 +410,6 @@ Result on the seed data (the other 8 meters come out normal):
 1. ✅ **Base**: docker-compose, PostgreSQL, schema, CSV load and backend skeleton (`/health`).
 2. ✅ **Backend**: meters and readings endpoints.
 3. ✅ **engine-ai**: baseline, detection and classification.
-4. **AI**: LLM explanation and recommendation; analysis endpoints.
+4. ✅ **AI**: LLM explanation and recommendation; analysis endpoints.
 5. **Frontend**: dashboard, meters, detail, anomalies and investigation.
 6. **Quality**: tests, documentation and demo script.

@@ -29,10 +29,13 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       AI_ENGINE_URL: http://engine-ai:8000
+      AI_ENGINE_TIMEOUT: ${AI_ENGINE_TIMEOUT:-120s}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       db:
+        condition: service_healthy
+      engine-ai:
         condition: service_healthy
 
   engine-ai:

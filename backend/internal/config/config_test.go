@@ -5,11 +5,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 var allVars = []string{
 	"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME",
 	"HTTP_PORT", "CORS_ALLOWED_ORIGINS", "LOG_LEVEL",
+	"AI_ENGINE_URL", "AI_ENGINE_TIMEOUT",
 }
 
 // setEnv sets every known variable, using "" for the ones not in vals.
@@ -47,6 +49,30 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if want := []string{"http://localhost:3000"}; !slices.Equal(cfg.CORSAllowedOrigins, want) {
 		t.Errorf("CORSAllowedOrigins = %v, want %v", cfg.CORSAllowedOrigins, want)
+	}
+	if cfg.AIEngineURL != "http://engine-ai:8000" {
+		t.Errorf("AIEngineURL = %q, want http://engine-ai:8000", cfg.AIEngineURL)
+	}
+	if cfg.AIEngineTimeout != 120*time.Second {
+		t.Errorf("AIEngineTimeout = %v, want 120s", cfg.AIEngineTimeout)
+	}
+}
+
+func TestLoadAIEngineValues(t *testing.T) {
+	env := validEnv()
+	env["AI_ENGINE_URL"] = " http://localhost:8000/ "
+	env["AI_ENGINE_TIMEOUT"] = "2m"
+	setEnv(t, env)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AIEngineURL != "http://localhost:8000" {
+		t.Errorf("AIEngineURL = %q, want http://localhost:8000", cfg.AIEngineURL)
+	}
+	if cfg.AIEngineTimeout != 2*time.Minute {
+		t.Errorf("AIEngineTimeout = %v, want 2m", cfg.AIEngineTimeout)
 	}
 }
 
@@ -86,6 +112,11 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"DB port out of range", "DB_PORT", "70000"},
 		{"HTTP port zero", "HTTP_PORT", "0"},
 		{"unknown log level", "LOG_LEVEL", "verbose"},
+		{"engine URL without scheme", "AI_ENGINE_URL", "engine-ai:8000"},
+		{"engine URL with other scheme", "AI_ENGINE_URL", "ftp://engine-ai"},
+		{"engine timeout without unit", "AI_ENGINE_TIMEOUT", "120"},
+		{"engine timeout zero", "AI_ENGINE_TIMEOUT", "0s"},
+		{"engine timeout negative", "AI_ENGINE_TIMEOUT", "-5s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
