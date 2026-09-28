@@ -46,6 +46,8 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, apperr.ErrConflict):
 		writeError(w, r, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, apperr.ErrUnauthorized):
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", err.Error())
 	default:
 		slog.ErrorContext(r.Context(), "internal error", "request_id", RequestIDFrom(r.Context()), "error", err)
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
