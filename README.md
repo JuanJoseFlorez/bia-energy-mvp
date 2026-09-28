@@ -1,17 +1,6 @@
 # BIA Energy MVP — AI Energy Management Platform
 
-MVP to manage electric meters and use AI to **detect, explain, prioritize and recommend actions** on consumption anomalies.
-
-> Status: **work in progress**. Database and orchestration, the backend read API and the engine-ai service (detection, classification and AI explanations) are ready; analysis endpoints and frontend pending.
-
-## Stack
-
-| Component    | Technology         | Responsibility                                          |
-| ------------ | ------------------ | ------------------------------------------------------- |
-| `backend/`   | Go                 | REST API, persistence, analysis orchestration           |
-| `frontend/`  | React + TypeScript | Dashboard, meters, detail, anomalies, investigation     |
-| `engine-ai/` | Python + LLM       | Baseline, anomaly detection, explanation, recommendation |
-| `db`         | PostgreSQL 15      | Meters, readings, events, analysis runs, anomalies      |
+MVP to manage 12 electric meters (14 days of hourly readings) and use AI to **detect, explain, prioritize and recommend actions** on consumption anomalies.
 
 ## Architecture
 
@@ -21,432 +10,110 @@ Frontend (React/TS) ──HTTP──▶ Backend (Go, REST API) ──HTTP──�
                                      └─────────▶ PostgreSQL ◀────────┘
 ```
 
-- **Frontend talks only to backend.** `engine-ai` is internal, no published ports.
-- **Detection is deterministic; the LLM explains.** Baseline, outliers, event correlation and data-quality checks use statistics/rules. The LLM writes the explanation and recommendation from the computed evidence.
-- **Works without an LLM.** If `LLM_API_KEY` is empty, `engine-ai` falls back to template explanations.
+| Component    | Stack                                                        | Role                                                    |
+| ------------ | ------------------------------------------------------------ | ------------------------------------------------------- |
+| `frontend/`  | Vite, React 19, TypeScript, Tailwind CSS v4, TanStack Query, Recharts | Dashboard, meters, detail, AI anomalies, investigation |
+| `backend/`   | Go 1.22, `net/http`, pgx                                     | REST API, persistence, orchestrates analysis runs       |
+| `engine-ai/` | Python 3.12, FastAPI, pandas, LiteLLM                        | Baseline, detection, classification, explanations       |
+| `db`         | PostgreSQL 15                                                | Seeded from `db-init/` (`readings.csv`, `events.csv`)   |
 
-## Repository layout
-
-```
-.
-├── backend/            # Go REST API
-├── frontend/           # React + TypeScript app (Vite, Tailwind CSS, TanStack Query)
-├── engine-ai/          # Python analysis engine (detection, classification, AI explanations)
-├── db-init/
-│   ├── init.sql        # Schema, meter seed, CSV load
-│   ├── readings.csv    # Hourly readings
-│   └── events.csv      # Known operational events
-├── docker-compose.yml
-└── .env.example
-```
-
-## Data
-
-- `readings.csv` — 4,032 hourly readings: 12 meters (M-101 to M-112) × 14 days. Consumption (kWh), voltage (V), current (A), power factor.
-- `events.csv` — known operational events, used to tell explainable anomalies and false positives apart.
-
-## Data model
-
-Created and seeded by `db-init/init.sql` on first Postgres start.
-
-| Table           | Purpose                           | Key fields                                                                                   |
-| --------------- | --------------------------------- | -------------------------------------------------------------------------------------------- |
-| `meters`        | Meters                            | `meter_id` (unique), `name`, `location`, `status`                                            |
-| `readings`      | Time series per meter             | `meter_id`, `timestamp`, `consumption_kwh`, `voltage_v`, `current_a`, `power_factor`         |
-| `events`        | Known operational events          | `meter_id`, `event_timestamp`, `event_type`, `description`                                   |
-| `analysis_runs` | One row per AI analysis execution | `status` (`PENDING`/`RUNNING`/`COMPLETED`/`FAILED`), `current_step`, `started_at`, `updated_at` (heartbeat), `finished_at`, `summary`, `error` |
-| `anomalies`     | Analysis result per meter         | `analysis_id`, `type`, `severity`, `confidence`, `priority`, `reason`, `explanation`, `recommended_action`, `explanation_source` (`llm`/`template`), `evidence`, `status` (action workflow) |
-| `meter_metrics` | Daily metrics per meter and run   | `analysis_id`, `meter_id`, `current_kwh`, `baseline_kwh`, `variation_pct`, `change_start` |
-
-- `type`: `REAL_ANOMALY`, `EXPLAINABLE_ANOMALY`, `FALSE_POSITIVE`, `DATA_QUALITY`
-- `severity`: `LOW`, `MEDIUM`, `HIGH`
-- `confidence`: 0 to 1
-- `priority`: investigation order within a run (1 = first)
-- A partial unique index (`uq_analysis_runs_active`) allows at most one `PENDING`/`RUNNING` run at a time.
+- **Detection is deterministic; the LLM only explains.** Statistics and rules decide type, severity, confidence and priority; the LLM writes the texts from the computed evidence and can never change the classification.
+- **Works without an LLM.** With no `LLM_API_KEY`, template explanations are used; the demo never depends on a provider.
+- **Provider-agnostic.** The LLM is `LLM_MODEL=provider/model` through LiteLLM (e.g. `gemini/gemini-3.8-flash`, `openai/gpt-4o-mini`).
+- **`engine-ai` is internal** (no published ports); the frontend talks only to the backend.
 
 ## Getting started
 
-1. Create `.env` from the template and fill in values:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   | Variable         | Purpose                                            |
-   | ---------------- | -------------------------------------------------- |
-   | `DB_USER`        | Postgres user                                      |
-   | `DB_PASSWORD`    | Postgres password                                  |
-   | `DB_NAME`        | Database name                                      |
-   | `DB_HOST_PORT`   | Host port for Postgres (default `5432`)            |
-   | `LLM_MODEL`      | LLM as `provider/model` (e.g. `gemini/gemini-3.8-flash`) |
-   | `LLM_API_KEY`    | LLM API key (empty = template explanations)        |
-   | `LLM_MAX_CONCURRENCY` | Max simultaneous LLM calls per engine-ai process (default `4`) |
-   | `LLM_TIMEOUT_SECONDS` | Seconds an analysis waits for LLM texts, retries included (default `20`) |
-   | `AI_ENGINE_TIMEOUT` | Deadline for one whole analysis run, Go duration (default `120s`) |
-   | `DEMO_USER` / `DEMO_PASSWORD` | Demo login (default `demo` / `demo`) |
-   | `VITE_API_URL`   | Backend URL used by the frontend (build time)      |
-
-2. Start the whole stack:
-
-   ```bash
-   docker compose up --build
-   ```
-
-   Open http://localhost:3000 and sign in with the demo user (`demo` / `demo` unless changed in `.env`).
-
-   Then check the API is up:
-
-   ```bash
-   curl localhost:8080/health
-   ```
-
-> `init.sql` runs only on an empty volume. To recreate the database after a schema change: `docker compose down -v && docker compose up db` (wipes the volume; data reloads from the CSVs).
-
-## Backend (Go)
-
-REST API in `backend/`, organized by domain:
-
-```
-backend/
-├── cmd/api/                 # entrypoint: wiring, router, graceful shutdown
-└── internal/
-    ├── config/              # env loading + validation
-    ├── platform/            # cross-cutting: apperr, database, httpx, logger
-    ├── health/              # GET /health (template for new domains)
-    ├── meter/               # meters list, detail, readings
-    ├── dashboard/           # platform KPIs
-    ├── analysis/            # AI analysis runs: start, progress, persistence of results
-    └── anomaly/             # anomalies list, detail and action workflow
-```
-
-Each business domain is one package with `model.go`, `repository.go`, `service.go` and `handler.go` as needed. Services wrap `apperr` errors; handlers respond through `httpx`, which maps them to HTTP status codes with a single error format:
-
-```json
-{ "error": { "code": "not_found", "message": "..." }, "request_id": "..." }
-```
-
-Local development (DB in Docker, API on the host):
-
 ```bash
-docker compose up -d db
-cd backend
-make run     # loads ../.env, connects to localhost:$DB_HOST_PORT and engine-ai at localhost:8000
-make test    # unit tests, no Docker needed
-make lint    # gofmt + go vet
+cp .env.example .env      # set DB_USER, DB_PASSWORD, DB_NAME; optionally LLM_MODEL + LLM_API_KEY
+docker compose up --build
 ```
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `HTTP_PORT` | `8080` | API port |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `AI_ENGINE_URL` | `http://engine-ai:8000` | engine-ai base URL |
-| `AI_ENGINE_TIMEOUT` | `120s` | Deadline for one whole analysis run; keep well above `LLM_TIMEOUT_SECONDS` |
-| `DEMO_USER` / `DEMO_PASSWORD` | `demo` / `demo` | Demo login credentials |
+Open http://localhost:3000 and sign in with `demo` / `demo` (`DEMO_USER` / `DEMO_PASSWORD`). The API is on http://localhost:8080.
 
-Endpoints:
+`init.sql` runs only on an empty volume: after a schema change, `docker compose down -v` (data reloads from the CSVs).
 
-| Method | Path | Query params | Description |
-|---|---|---|---|
-| `GET` | `/health` | — | `200` if the database responds, `503` otherwise |
-| `POST` | `/auth/login` | body `{"username", "password"}` | Demo login: `200 {token, user}` or `401` |
-| `GET` | `/meters` | `status` (`all`\|`ok`\|`alert`\|`critical`), `q`, `sort` (`meter_id`\|`consumption`\|`variation`\|`severity`), `order` (`asc`\|`desc`), `limit` (1–200, default 50), `offset` | Meters with period consumption, daily metrics, health and top anomaly |
-| `GET` | `/meters/{meterId}` | — | Meter detail with full anomaly and events |
-| `GET` | `/meters/{meterId}/readings` | `from`, `to` (RFC3339 or `YYYY-MM-DD`, inclusive) | Hourly readings, ascending |
-| `GET` | `/dashboard/summary` | — | Platform KPIs |
-| `POST` | `/ai/analyze` | — | Start an analysis run: `202` with the run and `Location`, `409` if one is already active |
-| `GET` | `/ai/analysis/{id}` | — | Run status, current step, summary and error |
-| `GET` | `/ai/analysis/latest` | — | Most recently started run (`404` before the first one) |
-| `GET` | `/anomalies` | `analysis_id` (default: latest completed run), `type`, `severity`, `status` | Anomalies of one run in priority order |
-| `GET` | `/anomalies/{id}` | — | Anomaly with explanation, evidence, related events, readings window and allowed next statuses |
-| `PATCH` | `/anomalies/{id}` | body `{"status": "..."}` | Move the anomaly along the action workflow |
+## Demo flow
 
-`health`, `metrics` and `anomaly` are `null` until an analysis run has completed. Timestamps are RFC3339 UTC.
+`Login → Dashboard → Run AI Analysis → Medidores → M-109 → Anomalías IA → Investigación → Acción`
 
-- `order` defaults to `asc` for `sort=meter_id` and `desc` for every other sort key; `sort` and `order` are case-insensitive.
-- `q` matches a substring of `meter_id` only (case-insensitive; `%`, `_`, `\` are literal).
-- `status=ok|alert|critical` filters on `health`, so before the first completed analysis only `status=all` returns meters.
-
-Values in `metrics` and `anomaly` below illustrate output once an analysis has run; before that they are `null`.
-
-Example — `GET /meters?sort=variation`:
-
-```json
-{
-  "items": [{
-    "id": 9, "meter_id": "M-109", "name": "Meter 109", "location": "Planta C",
-    "status": "ACTIVE", "created_at": "2026-09-26T22:00:00Z",
-    "period_consumption_kwh": 17526.04,
-    "health": "CRITICAL",
-    "metrics": { "current_kwh": 2207.60, "baseline_kwh": 1052.70, "variation_pct": 109.7, "change_start": "2026-09-12T14:00:00Z" },
-    "anomaly": { "id": 3, "meter_id": "M-109", "type": "REAL_ANOMALY", "severity": "HIGH", "confidence": 0.96, "priority": 1 }
-  }],
-  "total": 12
-}
-```
-
-Example — `GET /dashboard/summary`:
-
-```json
-{
-  "meters_count": 12,
-  "period": { "from": "2026-09-01T00:00:00Z", "to": "2026-09-14T23:00:00Z" },
-  "total_consumption_kwh": 155250.85,
-  "last_analysis": null,
-  "anomalies": null
-}
-```
-
-Example — `GET /meters/M-109`:
-
-```json
-{
-  "id": 9, "meter_id": "M-109", "name": "Meter 109", "location": "Planta C",
-  "status": "ACTIVE", "created_at": "2026-09-26T22:00:00Z",
-  "period_consumption_kwh": 17526.04,
-  "health": "CRITICAL",
-  "metrics": { "current_kwh": 2207.60, "baseline_kwh": 1052.70, "variation_pct": 109.7, "change_start": "2026-09-12T14:00:00Z" },
-  "anomaly": { "id": 3, "meter_id": "M-109", "type": "REAL_ANOMALY", "severity": "HIGH", "confidence": 0.96, "priority": 1,
-               "reason": "...", "recommended_action": "...", "status": "PENDING", "detected_at": "2026-09-15T08:05:00Z" },
-  "events": [{ "id": 3, "meter_id": "M-109", "timestamp": "2026-09-12T14:00:00Z", "type": "UNKNOWN", "description": "No operational event reported" }]
-}
-```
-
-Example — `GET /meters/M-109/readings?from=2026-09-14&to=2026-09-14`:
-
-```json
-{
-  "meter_id": "M-109",
-  "items": [{ "id": 3001, "meter_id": "M-109", "timestamp": "2026-09-14T00:00:00Z", "consumption_kwh": 68.45,
-              "voltage_v": 215.51, "current_a": 317.9, "power_factor": 0.719, "status": "OK" }],
-  "total": 24
-}
-```
-
-### AI analysis runs
-
-`POST /ai/analyze` inserts a `PENDING` run and returns at once; a background goroutine then:
-
-1. sets the run `RUNNING` and calls engine-ai `POST /analyze`, which streams NDJSON lines;
-2. stores every `step` line in `current_step` (`READINGS → BASELINE → DETECTION → CORRELATION → EVENTS → EXPLANATION → RECOMMENDATION`) and bumps `updated_at`;
-3. on the `result` line writes `meter_metrics`, `anomalies` and `summary` in one transaction and sets `COMPLETED`.
-
-Clients poll `GET /ai/analysis/{id}` until `COMPLETED` or `FAILED`:
-
-```bash
-curl -i -X POST localhost:8080/ai/analyze          # 202, Location: /ai/analysis/1
-curl localhost:8080/ai/analysis/1                   # repeat until status is COMPLETED
-curl localhost:8080/anomalies                       # latest completed run, priority order
-```
-
-```json
-{
-  "id": 1, "status": "COMPLETED", "current_step": "RECOMMENDATION",
-  "started_at": "2026-09-27T10:00:00Z", "updated_at": "2026-09-27T10:00:03Z", "finished_at": "2026-09-27T10:00:03Z",
-  "summary": { "anomalies_detected": 4, "high_priority": 2 },
-  "error": null
-}
-```
-
-Failure handling:
-
-| Situation | Run ends | `error` |
-|---|---|---|
-| Run exceeds `AI_ENGINE_TIMEOUT` | `FAILED` | `analysis timed out` |
-| engine-ai unreachable or non-200 | `FAILED` | `analysis engine unavailable` |
-| engine-ai streams an `error` line | `FAILED` | `analysis engine failed` |
-| Stream ends without a result | `FAILED` | `analysis engine returned no result` |
-| Results cannot be stored | `FAILED` | `could not save analysis results` |
-| Backend shuts down mid-run | `FAILED` | `interrupted by shutdown` |
-| Backend crashed mid-run | `FAILED` on next start or POST, once `updated_at` is older than `AI_ENGINE_TIMEOUT` + 30 s | `interrupted: backend restarted` |
-
-Only one run can be active (`409 Conflict` otherwise); the database enforces it with a partial unique index, so concurrent POSTs cannot both start a run.
-
-**Known limitation:** runs execute inside the backend process. A crashed backend leaves its run active until the stale threshold passes. The next step, if needed, is a database-backed queue (a worker claiming `PENDING` runs with `SELECT … FOR UPDATE SKIP LOCKED`), then an external queue.
-
-### Anomalies and action workflow
-
-`GET /anomalies/{id}` adds `explanation`, the engine's `evidence` (verbatim), `related_events`, `readings_window` and `next_statuses`. `readings_window` is `{from, to}` for charting: 7 days on each side of the change start (else the transient start, else the earliest outlier, else the last reading), clamped to the meter's data; fetch the readings with `GET /meters/{meterId}/readings?from=…&to=…`. `anomaly` is `false` only for `FALSE_POSITIVE`.
-
-`PATCH /anomalies/{id}` with `{"status": "INVESTIGATING"}` follows this table; anything else returns `409`:
-
-| From | To |
-|---|---|
-| `PENDING` | `INVESTIGATING`, `VALIDATED`, `DISMISSED` |
-| `INVESTIGATING` | `VALIDATED`, `RESOLVED`, `DISMISSED` |
-| `VALIDATED` | `RESOLVED` |
-| `RESOLVED`, `DISMISSED` | — (terminal) |
-
-Integration tests run against the dockerized database:
-
-```bash
-docker compose up -d db
-cd backend && make test-integration
-```
-
-**The login is a demo mock:** `POST /auth/login` checks the single demo user and returns an opaque token, but no endpoint verifies it — the API itself is not protected. A real setup would sign the token and add an auth middleware.
-
-## Frontend (React)
-
-Single-page app in `frontend/` (Vite, React 19, TypeScript strict, Tailwind CSS v4, TanStack Query, React Router, Recharts). It talks only to the backend, at `VITE_API_URL` (build time, default `http://localhost:8080`).
-
-```
-frontend/src/
-├── api/           # fetch client (ApiError), backend JSON types, query hooks
-├── components/    # UI building blocks (Card, Badge, Button, KpiCard, …)
-├── lib/           # es-CO formatting, Spanish labels and colors per type/severity/status
-├── layout/        # app shell: sidebar, header with Run AI Analysis, run progress banner
-└── features/      # auth, analysis run, dashboard, meters, anomalies/investigation
-```
-
-- **Run AI Analysis** lives in the header of every screen. Progress is a banner showing the seven pipeline steps from `current_step`, polled every second; it survives navigation and page reloads, follows an already active run on `409`, and ends with "N anomalías detectadas · M requieren atención prioritaria".
-- **Screens:** Dashboard (KPIs, "Qué investigar primero", breakdown by type) → Medidores (filters all/normal/alert/critical, search, sort — kept in the URL) → meter detail (consumption vs baseline, hourly or daily, with change window, outliers and events; voltage, current and power factor) → Anomalías IA (priority order, confidence, recommended action) → Investigación (what the AI found, baseline comparison, changed variables, evidence, and the action workflow buttons).
-- UI copy is Spanish; numbers use `es-CO` (`2.207,6 kWh`, `+109,7 %`); dataset timestamps are shown in UTC, like the engine's texts.
-
-Local development (backend on `:8080`):
-
-```bash
-cd frontend
-make install   # npm ci
-make run       # Vite dev server on http://localhost:3000
-make test      # Vitest + Testing Library
-make lint      # oxlint + tsc
-make build     # production build into dist/
-```
-
-In Docker the app is built with `VITE_API_URL` and served by nginx on port 80 (mapped to `3000`).
-
-## engine-ai (Python)
-
-Analysis engine in `engine-ai/` (Python 3.12, FastAPI, pandas, LiteLLM). It reads `readings` and `events` (read-only), computes a per-meter baseline, runs the detectors, classifies each finding with generic rules and returns daily metrics plus prioritized anomalies with evidence and Spanish texts (reason, explanation, recommended action) written by an LLM or by templates. Internal service: no published ports; the backend reaches it at `AI_ENGINE_URL`.
-
-```
-engine-ai/
-├── app/
-│   ├── main.py          # composition root: settings, JSON logging, DB pool, app
-│   ├── api.py           # GET /health, POST /analyze
-│   ├── loader.py        # read-only SQL -> DataFrames (only module touching the DB)
-│   ├── explanation/     # Spanish texts for each anomaly
-│   │   ├── facts.py     # evidence -> Spanish facts, prompt input, grounding tokens
-│   │   ├── templates.py # base action per type, template texts
-│   │   ├── review.py    # validates LLM drafts (schema, lengths, grounding)
-│   │   └── llm.py       # LiteLLM calls through a bounded pool (only module importing litellm)
-│   └── analysis/        # pure core: DataFrames in, result out, no I/O
-│       ├── pipeline.py  # runs the steps, yields progress events and the result
-│       ├── baseline.py  # reference window, hour-of-day profile, daily metrics
-│       ├── detectors.py # persistent change, transient, outliers, pattern, electrical, data quality
-│       ├── events.py    # event matching
-│       ├── classify.py  # type, severity, confidence, priority
-│       ├── thresholds.py
-│       └── models.py
-└── tests/               # unit, acceptance on the seed CSVs, API, integration
-```
-
-Local development (DB in Docker, engine on the host, Python 3.12):
-
-```bash
-docker compose up -d db
-cd engine-ai
-make install           # creates .venv with runtime + dev dependencies
-make run               # loads ../.env, serves on localhost:8000
-make test              # unit + acceptance tests, no Docker needed
-make lint              # ruff check + ruff format --check
-make test-integration  # loader against the dockerized DB
-make test-llm          # asks the real LLM (LLM_MODEL / LLM_API_KEY from ../.env) about the seed anomalies
-```
-
-Endpoints:
-
-| Method | Path | Body | Description |
-|---|---|---|---|
-| `GET` | `/health` | — | `200 {"status":"ok"}` if the database responds, `503 {"error":"database unavailable"}` otherwise |
-| `POST` | `/analyze` | optional `{"analysis_id": 7}` (log correlation only) | NDJSON stream: one `step` line per step, then one `result` (or `error`) line |
-
-```bash
-curl -N -X POST localhost:8000/analyze
-```
-
-```
-{"type": "step", "step": "READINGS"}
-{"type": "step", "step": "BASELINE"}
-{"type": "step", "step": "DETECTION"}
-{"type": "step", "step": "CORRELATION"}
-{"type": "step", "step": "EVENTS"}
-{"type": "step", "step": "EXPLANATION"}
-{"type": "step", "step": "RECOMMENDATION"}
-{"type": "result", "metrics": [...], "anomalies": [...]}
-```
-
-A load failure before the stream starts returns `503`; an exception during the analysis ends the stream with `{"type": "error", "message": "analysis failed"}` (details only in the logs). `metrics` has one row per meter; `anomalies` only the meters with a finding. Numbers are rounded to 2 decimals, timestamps are RFC3339 UTC. Example anomaly (`outlier_timestamps` shortened):
-
-```json
-{"meter_id": "M-109", "anomaly": true, "type": "REAL_ANOMALY", "severity": "HIGH", "confidence": 0.99, "priority": 1,
- "reason": "Consumo +109,7 % sobre el baseline desde el 12-sep 14:00, sin evento operativo que lo explique.",
- "explanation": "El consumo diario pasó de un baseline de 1.052,7 kWh a 2.207,6 kWh (+109,7 %). ...",
- "recommended_action": "Investigar medidor e instalación. Revisar la carga conectada desde el 12-sep 14:00 y la caída del factor de potencia.",
- "explanation_source": "template",
- "evidence": {"baseline_kwh": 1052.7, "current_kwh": 2207.6, "variation_pct": 109.71,
-   "change_start": "2026-09-12T14:00:00Z", "baseline_reliable": true, "shift_pct": 109.3, "effect_size": 29.71,
-   "changed_vars": {"power_factor": {"before": 0.94, "after": 0.74}, "current_a": {"before": 195.35, "after": 411.07},
-                    "voltage_v": {"before": 219.84, "after": 216.99}},
-   "transient": null, "failed_checks": [], "outlier_timestamps": ["2026-09-12T14:00:00Z", "..."],
-   "profile_correlation": 0.98, "related_event_ids": [3],
-   "signals": ["no_explaining_event", "power_factor_drop", "power_ratio_shift", "current_follows"]}}
-```
-
-### AI explanations
-
-The LLM explains; it never decides. For every anomaly the engine turns the evidence into Spanish facts (`1.052,7 kWh`, `+109,7 %`, `12-sep 14:00`) and asks the LLM, through LiteLLM, for a JSON object with `reason` (one line), `explanation` (a paragraph) and `action_detail`.
-
-- **Action anchoring.** The action category is fixed by type: `REAL_ANOMALY` → "Investigar medidor e instalación", `DATA_QUALITY` → "Validar medidor / lecturas", `EXPLAINABLE_ANOMALY` → "Validar operación", `FALSE_POSITIVE` → "No escalar". `recommended_action` = base action + the LLM's detail, so a false positive can never be escalated.
-- **Guardrails.** A draft is used only if it has exactly the three non-empty text fields, respects the length limits (160 / 600 / 200 characters) and passes the grounding check: every number, date and time in it must appear in the facts the LLM received, and the meter id itself is never part of that pool. A number's tolerance follows its own written precision: a value written with *d* decimal digits (thousands dots don't count) matches an allowed number within half its last digit (e.g. "110 %" matches "+109,7 %", but "0,84" does not match "0,74"). A percentage in the output is grounded only against percentages in the facts, never against a plain number. Otherwise that anomaly gets the template texts.
-- **Fallback and provenance.** Without `LLM_MODEL` and `LLM_API_KEY`, or when a call fails, times out or its draft is rejected, deterministic templates write the texts. `explanation_source` says which one (`llm` / `template`); `type`, `severity`, `confidence`, `priority` and `evidence` are identical either way.
-- **Limits and retries.** One draft per anomaly through one process-wide pool of `LLM_MAX_CONCURRENCY` threads (default 4); an analysis waits at most `LLM_TIMEOUT_SECONDS` (default 20) for all drafts, retries included. Transient provider errors (5xx, 429, connection errors, call timeouts) get up to 2 retries with ~1 s / ~2 s backoff (`Retry-After` honored when the provider sends one); a draft that fails the checks gets 1 more attempt; client errors (e.g. 404 unknown model) are not retried. A retry is skipped and the draft fails as `timeout` when its pause (backoff or `Retry-After`) would not fit before the deadline — it never sleeps a partial pause. No `temperature` is sent (provider default). The API key is never logged.
-- **Switching provider** is a `.env` change: `LLM_MODEL=openai/gpt-4o-mini` plus that provider's key.
-
-### Detection approach
-
-Detection is rules plus robust statistics, per meter, with no meter-specific logic; every threshold is a named constant in `app/analysis/thresholds.py`.
-
-- **Baseline (two passes).** Hour-of-day profile `P[h]` = median kWh at each hour over a reference window; `ratio = kWh / P[hour]` removes the daily cycle. Pass 1 uses the whole series; if a persistent change is found, pass 2 uses the full days before it (at least 3), so the baseline is not contaminated by the change. `baseline_kwh` = median daily total of the reference window (a one-day outage does not pull it down), `current_kwh` = last 24 hours, `variation_pct` = their relative difference.
-- **Persistent change.** Best single mean-shift split of the ratio (both segments ≥ 12 h): flagged when the median shift is ≥ 20 %, the effect size is ≥ 5 and the change lasts ≥ 24 h.
-- **Transient.** Longest run of hours with the ratio ≥ 30 % away from 1, lasting 3–23 h and followed by ≥ 3 normal hours.
-- **Outliers and hourly pattern** (evidence only): hours with a robust z ≥ 8 and the correlation of the last day's shape with the reference profile.
-- **Electrical change** at the change split: power-factor drop ≥ 0.05 or a shift ≥ 15 % of `kWh / (V·I·PF/1000)`; current moving with consumption is recorded as a supporting signal.
-- **Data quality**: voltage > 5 % from its median, voltage / power-factor jumps (robust z > 6), relative current jumps while consumption stays flat, `kWh` inconsistent with `V·I·PF` by > 50 %, power factor outside [0, 1], ≥ 6 identical consecutive values. Fires when ≥ 3 flagged hours fall inside a 24 h window.
-- **Events** of the same meter: a change or data-quality onset matches an event within ±6 h; a transient matches a `SCHEDULED_OUTAGE` only if it lies fully inside `[event − 6 h, event + 24 h]`. `OPERATIONAL_CHANGE` explains a persistent change, `SCHEDULED_OUTAGE` a transient, `DATA_QUALITY` corroborates a data-quality finding; `UNKNOWN` explains nothing.
-
-### Classification (first matching rule wins)
-
-| # | Condition | `type` | `severity` |
-|---|---|---|---|
-| 1 | Data-quality checks fire, no persistent change | `DATA_QUALITY` | `HIGH` |
-| 2 | Persistent change + matching `OPERATIONAL_CHANGE` event | `EXPLAINABLE_ANOMALY` | `MEDIUM` |
-| 3 | Persistent change, no explaining event | `REAL_ANOMALY` | `HIGH` if shift ≥ 100 % or electrical change, else `MEDIUM` |
-| 4 | Transient fully inside a `SCHEDULED_OUTAGE` window | `FALSE_POSITIVE` (`anomaly: false`) | `LOW` |
-| 5 | Transient, no explaining event | `REAL_ANOMALY` | `MEDIUM` |
-| 6 | Nothing | no anomaly | — |
-
-**Confidence** = `min(0.99, 0.50 + 0.30 · strength + 0.05 · corroborations)`, minus `0.15` when the baseline is not reliable. `strength` ∈ [0, 1] is `|effect| / 20` for changes and transients and `flagged hours / 12` for data quality; every corroboration is listed in `evidence.signals`.
-
-**Priority**: `REAL_ANOMALY` > `DATA_QUALITY` > `EXPLAINABLE_ANOMALY` > `FALSE_POSITIVE`, then severity, confidence, `|variation_pct|` and `meter_id`.
+1. **Run AI Analysis** (header, every screen): a banner shows the seven pipeline steps live (`Lecturas → Baseline → Detección → Correlación → Eventos → Explicación → Recomendación`) and ends with *"4 anomalías detectadas · 2 requieren atención prioritaria"*.
+2. **Dashboard**: KPIs (meters, consumption, AI anomalies, high priority, AI confidence, last analysis) and *"Qué investigar primero"*, in priority order.
+3. **Medidores**: filters (all / normal / alert / critical), search, sort; **detail** with consumption vs baseline (hourly or daily), change window, outliers, events, and voltage / current / power factor.
+4. **Anomalías IA**: type, severity, confidence and recommended action per anomaly.
+5. **Investigación**: what the AI found (LLM or template), baseline comparison, changed variables, evidence, related events — and the action buttons (`PENDING → INVESTIGATING → VALIDATED → RESOLVED`, or `DISMISSED`).
 
 Result on the seed data (the other 8 meters come out normal):
 
-| Priority | Meter | Type | Severity | Confidence |
-|---|---|---|---|---|
-| 1 | M-109 | `REAL_ANOMALY` | `HIGH` | 0.99 |
-| 2 | M-112 | `DATA_QUALITY` | `HIGH` | 0.99 |
-| 3 | M-104 | `EXPLAINABLE_ANOMALY` | `MEDIUM` | 0.83 |
-| 4 | M-106 | `FALSE_POSITIVE` | `LOW` | 0.85 |
+| Priority | Meter | Type | Severity | Confidence | Action |
+|---|---|---|---|---|---|
+| 1 | M-109 | `REAL_ANOMALY` | `HIGH` | 0.99 | Investigar medidor e instalación |
+| 2 | M-112 | `DATA_QUALITY` | `HIGH` | 0.99 | Validar medidor / lecturas |
+| 3 | M-104 | `EXPLAINABLE_ANOMALY` | `MEDIUM` | 0.83 | Validar operación |
+| 4 | M-106 | `FALSE_POSITIVE` | `LOW` | 0.85 | No escalar |
 
-**Known limitation:** a change within the first 3 days has no clean pre-change reference. It is still detected, but flagged `baseline_reliable: false` and its confidence is lowered.
+## How the AI works
 
-## Roadmap
+**Detection** (per meter, no meter-specific logic; thresholds in `engine-ai/app/analysis/thresholds.py`):
 
-1. ✅ **Base**: docker-compose, PostgreSQL, schema, CSV load and backend skeleton (`/health`).
-2. ✅ **Backend**: meters and readings endpoints.
-3. ✅ **engine-ai**: baseline, detection and classification.
-4. ✅ **AI**: LLM explanation and recommendation; analysis endpoints.
-5. ✅ **Frontend**: login, dashboard, meters, detail, anomalies, investigation and action workflow.
-6. **Quality**: tests, documentation and demo script.
+- **Baseline**: hour-of-day median profile over a reference window; recomputed on the days before a detected change so the change does not contaminate it. `baseline_kwh` = median daily total, `current_kwh` = last 24 h.
+- **Persistent change**: best mean-shift split of consumption / profile (≥ 20 % shift, ≥ 24 h). **Transient**: 3–23 h deviation ≥ 30 %.
+- **Electrical change**: power-factor drop or a shift in `kWh / (V·I·PF)` at the change.
+- **Data quality**: voltage out of range, voltage / current / power-factor jumps with flat consumption, `kWh` inconsistent with `V·I·PF`, repeated values.
+- **Events** of the same meter within ±6 h (outages: `[event − 6 h, event + 24 h]`); `UNKNOWN` events explain nothing.
+
+**Classification** (first matching rule wins):
+
+| Condition | Type | Severity |
+|---|---|---|
+| Data-quality checks fire, no persistent change | `DATA_QUALITY` | `HIGH` |
+| Persistent change + `OPERATIONAL_CHANGE` event | `EXPLAINABLE_ANOMALY` | `MEDIUM` |
+| Persistent change, no explaining event | `REAL_ANOMALY` | `HIGH` if ≥ 100 % or electrical change, else `MEDIUM` |
+| Transient inside a `SCHEDULED_OUTAGE` window | `FALSE_POSITIVE` | `LOW` |
+| Transient, no explaining event | `REAL_ANOMALY` | `MEDIUM` |
+
+**Confidence** = `min(0.99, 0.50 + 0.30 · strength + 0.05 · corroborations)` (− 0.15 with an unreliable baseline). **Priority**: `REAL_ANOMALY` > `DATA_QUALITY` > `EXPLAINABLE_ANOMALY` > `FALSE_POSITIVE`, then severity and confidence.
+
+**Explanations**: the LLM gets only the evidence as Spanish facts and returns `reason`, `explanation` and an action detail. Guardrails:
+
+- The action category is fixed by type (above), so a false positive can never be escalated.
+- A draft is accepted only if it passes schema, length and **grounding** checks (every number, date and time must come from the evidence); otherwise the template is used. `explanation_source` records `llm` or `template`.
+- Bounded pool (`LLM_MAX_CONCURRENCY`, default 4), deadline per analysis (`LLM_TIMEOUT_SECONDS`, default 20) with limited retries.
+
+## API
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/auth/login` | Demo login (mock) |
+| `GET` | `/dashboard/summary` | Platform KPIs |
+| `GET` | `/meters` | `status`, `q`, `sort` (`consumption`\|`variation`\|`severity`), `order` |
+| `GET` | `/meters/{meterId}` | Metrics, health, anomaly, events |
+| `GET` | `/meters/{meterId}/readings` | Hourly readings, optional `from` / `to` |
+| `POST` | `/ai/analyze` | Start a run: `202` + `Location`, `409` if one is active |
+| `GET` | `/ai/analysis/{id}` · `/ai/analysis/latest` | Status, current step, summary, error |
+| `GET` | `/anomalies` | Latest run by default; `type`, `severity`, `status` |
+| `GET` | `/anomalies/{id}` | Explanation, evidence, related events, readings window, next statuses |
+| `PATCH` | `/anomalies/{id}` | `{"status": …}` along the action workflow (`409` if not allowed) |
+
+Runs execute in the background: the backend consumes engine-ai's NDJSON progress stream, stores the current step, and writes metrics, anomalies and summary in one transaction. Timeouts, engine failures and shutdowns end the run `FAILED` with a readable `error`; a partial unique index guarantees one active run.
+
+Errors share one format: `{"error": {"code": "not_found", "message": "..."}, "request_id": "..."}`.
+
+## Development
+
+Each service has a `Makefile` (`make run`, `make test`, `make lint`):
+
+```bash
+docker compose up -d db
+make -C backend test test-integration     # Go unit + integration (dockerized DB)
+make -C engine-ai install test            # pytest: unit + acceptance on the seed CSVs
+make -C frontend install test             # Vitest + Testing Library
+```
+
+`make run` in `backend/` (`:8080`), `engine-ai/` (`:8000`) and `frontend/` (`:3000`) runs each service on the host against the dockerized DB. `engine-ai` also has `make test-llm` to try the real LLM configured in `.env`.
+
+## Known limitations
+
+- **Login is a mock**: it checks one demo user and returns a token that no endpoint verifies; the API is not protected.
+- **Runs execute inside the backend process**: a crashed backend leaves its run active until a stale sweep fails it (`AI_ENGINE_TIMEOUT` + 30 s). Next step would be a database-backed job queue.
+- **A change in the first 3 days** has no clean reference: it is detected, but flagged `baseline_reliable: false` with lower confidence.
