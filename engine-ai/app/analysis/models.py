@@ -99,6 +99,10 @@ class Anomaly:
     confidence: float
     evidence: Evidence
     priority: int = 0
+    reason: str = ""
+    explanation: str = ""
+    recommended_action: str = ""
+    explanation_source: str = ""  # "llm" | "template"
 
     @property
     def anomaly(self) -> bool:
@@ -112,5 +116,9 @@ class Anomaly:
             "severity": self.severity,
             "confidence": round2(self.confidence),
             "priority": self.priority,
+            "reason": self.reason,
+            "explanation": self.explanation,
+            "recommended_action": self.recommended_action,
+            "explanation_source": self.explanation_source,
             "evidence": self.evidence.to_dict(),
         }

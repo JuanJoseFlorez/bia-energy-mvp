@@ -1,11 +1,24 @@
 import json
+import logging
 import math
 
 import pandas as pd
 import pytest
 
 from app.analysis.pipeline import establish_reference, run_analysis
+from app.explanation.review import Draft
 from tests.support import SHAPE, START, as_readings, make_series, no_events
+
+STEPS = [
+    "READINGS",
+    "BASELINE",
+    "DETECTION",
+    "CORRELATION",
+    "EVENTS",
+    "EXPLANATION",
+    "RECOMMENDATION",
+]
+CORE_FIELDS = ("meter_id", "anomaly", "type", "severity", "confidence", "priority", "evidence")
 
 
 def result_of(readings: pd.DataFrame, events: pd.DataFrame | None = None) -> dict:
@@ -22,14 +35,8 @@ def stepped(at: str, factor: float) -> pd.DataFrame:
 
 def test_steps_in_order_then_result():
     out = list(run_analysis(as_readings(make_series()), no_events()))
-    assert [e["type"] for e in out] == ["step"] * 5 + ["result"]
-    assert [e["step"] for e in out[:5]] == [
-        "READINGS",
-        "BASELINE",
-        "DETECTION",
-        "CORRELATION",
-        "EVENTS",
-    ]
+    assert [e["type"] for e in out] == ["step"] * 7 + ["result"]
+    assert [e["step"] for e in out[:7]] == STEPS
 
 
 def test_two_pass_reference_uses_pre_change_days():
@@ -138,3 +145,90 @@ def test_unsorted_duplicated_and_missing_rows_are_cleaned():
     messy = pd.concat([messy[messy["timestamp"] != broken["timestamp"].iloc[0]], broken])
     expected = result_of(clean.drop(index=7))
     assert result_of(messy) == expected
+
+
+def two_anomalies() -> pd.DataFrame:
+    return pd.concat(
+        [
+            as_readings(stepped("2026-09-10 00:00", 1.8), "X-1"),
+            as_readings(stepped("2026-09-11 00:00", 1.4), "X-2"),
+            as_readings(make_series(), "X-3"),
+        ]
+    )
+
+
+def core(result: dict) -> list[dict]:
+    return [{k: a[k] for k in CORE_FIELDS} for a in result["anomalies"]]
+
+
+def test_without_drafter_every_anomaly_gets_template_texts():
+    anomalies = result_of(two_anomalies())["anomalies"]
+    assert [a["meter_id"] for a in anomalies] == ["X-1", "X-2"]
+    for a in anomalies:
+        assert a["explanation_source"] == "template"
+        assert a["reason"] and a["explanation"]
+        assert a["recommended_action"].startswith("Investigar medidor e instalación. ")
+
+
+def test_drafter_changes_texts_but_never_the_classification():
+    requested = []
+
+    def drafter(requests):
+        requested.extend(requests)
+        return {
+            r.meter_id: Draft(
+                data={
+                    "reason": "Texto del modelo.",
+                    "explanation": "Explicación del modelo.",
+                    "action_detail": "Paso concreto.",
+                }
+            )
+            for r in requests
+        }
+
+    readings = two_anomalies()
+    with_llm = list(run_analysis(readings, no_events(), drafter=drafter))[-1]
+    without = result_of(readings)
+    assert core(with_llm) == core(without)
+    assert with_llm["metrics"] == without["metrics"]
+    assert [r.meter_id for r in requested] == ["X-1", "X-2"]
+    assert requested[0].prompt.startswith("Medidor: X-1\nAcción base: Investigar")
+    for a in with_llm["anomalies"]:
+        assert a["explanation_source"] == "llm"
+        assert a["reason"] == "Texto del modelo."
+        assert a["recommended_action"] == "Investigar medidor e instalación. Paso concreto."
+
+
+def test_rejected_and_missing_drafts_fall_back_per_anomaly(caplog):
+    def drafter(requests):
+        assert {r.analysis_id for r in requests} == {9}  # for the llm_retry log lines
+        return {
+            "X-1": Draft(data={"reason": "Sube 999 %.", "explanation": "x", "action_detail": "y"})
+        }
+
+    caplog.set_level(logging.INFO)
+    out = list(run_analysis(two_anomalies(), no_events(), analysis_id=9, drafter=drafter))
+    anomalies = out[-1]["anomalies"]
+    assert [a["explanation_source"] for a in anomalies] == ["template", "template"]
+    fallbacks = [
+        (r.meter_id, r.reason, r.analysis_id) for r in caplog.records if r.msg == "llm_fallback"
+    ]
+    assert fallbacks == [("X-1", "ungrounded_number", 9), ("X-2", "missing", 9)]
+    [summary] = [r for r in caplog.records if r.msg == "explanations ready"]
+    assert (summary.llm, summary.template) == (0, 2)
+
+
+def test_failing_drafter_never_breaks_the_analysis():
+    def drafter(requests):
+        raise RuntimeError("boom")
+
+    out = list(run_analysis(two_anomalies(), no_events(), drafter=drafter))
+    assert out[-1]["type"] == "result"
+    assert {a["explanation_source"] for a in out[-1]["anomalies"]} == {"template"}
+
+
+def test_drafter_is_not_called_without_anomalies():
+    calls = []
+    out = list(run_analysis(as_readings(make_series()), no_events(), drafter=calls.append))
+    assert out[-1]["anomalies"] == []
+    assert calls == []

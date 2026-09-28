@@ -52,8 +52,12 @@ CREATE TABLE anomalies (
         CHECK (confidence BETWEEN 0 AND 1),
     -- Investigation order within a run (1 = investigate first)
     priority INT,
+    -- One-line reason, explanation paragraph and anchored action (Spanish)
     reason TEXT,
+    explanation TEXT,
     recommended_action TEXT,
+    -- 'llm' when the texts came from the LLM, 'template' when from the fallback
+    explanation_source VARCHAR(10) CHECK (explanation_source IN ('llm', 'template')),
     -- Supporting data, e.g. baseline_kwh, current_kwh, variation_pct, changed_vars, related_event_ids
     evidence JSONB,
     status VARCHAR(20) DEFAULT 'PENDING'

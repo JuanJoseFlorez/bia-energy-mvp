@@ -21,6 +21,9 @@ from app.analysis.detectors import (
 )
 from app.analysis.events import match_onset, match_outage_window
 from app.analysis.models import Anomaly, Evidence, MeterMetrics
+from app.explanation.facts import Facts, build_facts, render_prompt
+from app.explanation.review import LLM, TEMPLATE, Draft, Drafter, DraftRequest, explain
+from app.explanation.templates import ACTION_BASE
 
 logger = logging.getLogger(__name__)
 
@@ -140,14 +143,64 @@ def _evidence(
     )
 
 
+def request_drafts(
+    drafter: Drafter | None, prompts: dict[str, str], analysis_id: int | None
+) -> dict[str, Draft] | None:
+    """LLM drafts per meter; None when no LLM is configured. A failing drafter gives {}."""
+    if drafter is None:
+        return None
+    if not prompts:
+        return {}
+    try:
+        return drafter(
+            [DraftRequest(meter_id, prompt, analysis_id) for meter_id, prompt in prompts.items()]
+        )
+    except Exception:
+        logger.exception("llm drafter failed", extra={"analysis_id": analysis_id})
+        return {}
+
+
+def explain_anomaly(
+    anomaly: Anomaly,
+    facts: Facts,
+    prompt: str,
+    drafts: dict[str, Draft] | None,
+    analysis_id: int | None,
+) -> Anomaly:
+    """Attach reason, explanation, anchored action and their source to the anomaly."""
+    draft = None if drafts is None else drafts.get(anomaly.meter_id, Draft(failure="missing"))
+    result = explain(facts, prompt, draft)
+    context = {"analysis_id": analysis_id, "meter_id": anomaly.meter_id}
+    if result.rejection:
+        logger.warning("llm_fallback", extra={**context, "reason": result.rejection})
+    logger.info(
+        "anomaly explained",
+        extra={
+            **context,
+            "explanation_source": result.source,
+            "draft_ms": draft.duration_ms if draft else None,
+            "attempts": draft.attempts if draft else 0,
+        },
+    )
+    return replace(
+        anomaly,
+        reason=result.reason,
+        explanation=result.explanation,
+        recommended_action=result.recommended_action,
+        explanation_source=result.source,
+    )
+
+
 def run_analysis(
     readings: pd.DataFrame,
     events: pd.DataFrame,
     analysis_id: int | None = None,
+    drafter: Drafter | None = None,
 ) -> Iterator[dict]:
     """Yield one step event per pipeline step, then the result event.
 
-    analysis_id is only attached to log lines; it never changes the computation.
+    analysis_id is only attached to log lines; it never changes the computation. drafter
+    (optional) writes the texts; without it, or when its draft is rejected, templates do.
     """
     clock = _StepClock(analysis_id)
 
@@ -217,10 +270,30 @@ def run_analysis(
             )
         )
     ranked = prioritize(anomalies)
+
+    yield clock.start("EXPLANATION")
+    facts = {a.meter_id: build_facts(a, events) for a in ranked}
+    prompts = {m: render_prompt(f, ACTION_BASE[f.type]) for m, f in facts.items()}
+    drafts = request_drafts(drafter, prompts, analysis_id)
+
+    yield clock.start("RECOMMENDATION")
+    explained = [
+        explain_anomaly(a, facts[a.meter_id], prompts[a.meter_id], drafts, analysis_id)
+        for a in ranked
+    ]
+    sources = [a.explanation_source for a in explained]
+    logger.info(
+        "explanations ready",
+        extra={
+            "analysis_id": analysis_id,
+            "llm": sources.count(LLM),
+            "template": sources.count(TEMPLATE),
+        },
+    )
     clock.finish()
 
     yield {
         "type": "result",
         "metrics": [m.to_dict() for m in metrics.values()],
-        "anomalies": [a.to_dict() for a in ranked],
+        "anomalies": [a.to_dict() for a in explained],
     }
